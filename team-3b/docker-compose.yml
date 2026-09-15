@@ -21,6 +21,28 @@ services:
     volumes:
       - ipfs_data:/export
 
+  hardhat-node:
+    image: node:20-alpine
+    working_dir: /app/mocks/contracts
+    volumes:
+      - .:/app
+    command: >
+      sh -c "npm install && npx hardhat node --hostname 0.0.0.0"
+    ports:
+      - "8545:8545"
+
+  hardhat-deploy:
+    image: node:20-alpine
+    working_dir: /app/mocks/contracts
+    volumes:
+      - .:/app
+    environment:
+      - TRIGGER_MOCK_TASK=true
+    command: >
+      sh -c "npm install && sleep 5 && npx hardhat run scripts/deploy_and_trigger.js --network localhost"
+    depends_on:
+      - hardhat-node
+
   inference-engine:
     build: 
       context: .
@@ -42,24 +64,30 @@ services:
       context: .
       dockerfile: event_listener/Dockerfile
     environment:
-      - WEB3_WS_URL=ws://hardhat:8545
+      - WEB3_WS_URL=ws://hardhat-node:8545
       - REDIS_URL=redis://redis:6379
+    env_file:
+      - .env.mock
     depends_on:
       redis:
         condition: service_healthy
-      inference-engine:
-        condition: service_started
+      hardhat-deploy:
+        condition: service_completed_successfully
 
   proof-submitter:
     build:
       context: .
       dockerfile: proof_submitter/Dockerfile
     environment:
-      - WEB3_RPC_URL=http://hardhat:8545
+      - WEB3_RPC_URL=http://hardhat-node:8545
       - REDIS_URL=redis://redis:6379
+    env_file:
+      - .env.mock
     depends_on:
       redis:
         condition: service_healthy
+      hardhat-deploy:
+        condition: service_completed_successfully
 
   verification-api:
     build:
