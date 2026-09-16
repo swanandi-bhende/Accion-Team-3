@@ -3,6 +3,7 @@
 .env
 .env.mock
 .env.*
+.env/
 
 # Python
 __pycache__/

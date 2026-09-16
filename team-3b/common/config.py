@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     model_storage_backend: str = Field(..., env="MODEL_STORAGE_BACKEND")
     model_storage_url: str = Field(..., env="MODEL_STORAGE_URL")
     model_max_size_mb: int = Field(500, env="MODEL_MAX_SIZE_MB")
+    zerog_rpc_endpoint: str = Field("https://rpc-testnet.0g.ai", env="ZEROG_RPC_ENDPOINT")
+    zerog_private_key: str = Field("", env="ZEROG_PRIVATE_KEY")
 
     # Blockchain
     web3_ws_url: str = Field(..., env="WEB3_WS_URL")

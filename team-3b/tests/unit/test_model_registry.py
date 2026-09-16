@@ -34,7 +34,7 @@ async def test_get_unknown_model_returns_none(redis_client):
 
 @pytest.mark.asyncio
 async def test_register_multiple_versions(redis_client):
-    from tests.property.test_model_registry import MockStorageBackend
+    from tests.property.test_model_registry_prop import MockStorageBackend
     storage = MockStorageBackend()
     registry = ModelRegistry(redis_client, storage)
 

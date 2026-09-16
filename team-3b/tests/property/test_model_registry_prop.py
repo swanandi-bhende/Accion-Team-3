@@ -57,7 +57,7 @@ async def test_property_19_model_registry_round_trip(model_id, model_binary):
     assert entry_v is not None
     assert entry_v.cid == cid
     
-    await redis_client.aclose()
+
 
 @settings(max_examples=10)
 @given(model_id=st.text(min_size=1, max_size=20), model_binary=st.binary(min_size=1, max_size=100))
@@ -73,7 +73,7 @@ async def test_property_20_cid_validation_before_reference(model_id, model_binar
     with pytest.raises(IntegrityCheckFailedError):
         await registry.register(model_id, invalid_cid, model_binary)
         
-    await redis_client.aclose()
+
 
 def test_property_15_exponential_backoff_bounds():
     """Property 15: Exponential backoff delay bounds."""
