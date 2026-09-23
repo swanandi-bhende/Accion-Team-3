@@ -33,10 +33,16 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"
+        
+from functools import lru_cache
 
-try:
-    settings = Settings()
-except ValueError as e:
-    print(f"CRITICAL: Failed to load environment configuration: {e}")
-    print("Ensure .env is fully populated from .env.example.")
-    raise
+@lru_cache()
+def get_settings():
+    try:
+        return Settings()
+    except ValueError as e:
+        print(f"CRITICAL: Failed to load environment configuration: {e}")
+        print("Ensure .env is fully populated from .env.example.")
+        raise
+

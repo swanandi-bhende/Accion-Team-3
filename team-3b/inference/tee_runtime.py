@@ -3,6 +3,7 @@ import time
 from enum import Enum
 from typing import Optional
 
+
 from common.exceptions import TEEUnavailableError, IntegrityCheckFailedError
 from common.models import AttestationReport
 from inference.enclave_sim import EnclaveSim
@@ -47,14 +48,13 @@ class TEERuntime:
         if len(model_binary) > 500 * 1024 * 1024:
             raise ValueError("Model binary exceeds 500MB limit")
 
+        computed_hash = hashlib.sha256(model_binary).hexdigest()
+        if computed_hash != model_hash:
+            raise IntegrityCheckFailedError(computed_hash, model_hash)
+
         decrypted_model = None
         try:
             decrypted_model = self.enclave.decrypt(model_binary, sealed_key)
-            computed_hash = hashlib.sha256(decrypted_model).hexdigest()
-            
-            if computed_hash != model_hash:
-                raise IntegrityCheckFailedError(computed_hash, model_hash)
-
             output = await self.enclave.run_isolated(decrypted_model, input_data)
             return output
         finally:
