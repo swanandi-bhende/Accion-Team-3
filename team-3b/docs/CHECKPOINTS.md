@@ -60,3 +60,11 @@ production candidate; the current
 `development-commitment` backend is deliberately not a zkML proof and is gated
 from production settlement. Transformer-small feasibility and measured proving
 times remain open mentor-review risks.
+
+For mentor review, tiny real EZKL round trips now verify for linear, MLP, CNN,
+and transformer-small. Proving times are 9.07 s, 9.36 s, 10.00 s, and 37.01 s
+respectively, all under 120 seconds. These are intentionally tiny fixtures, so
+the remaining question is how proof time and proving-key size scale with the
+production model sizes. Guidance is still needed on whether 120 seconds is a
+hard maximum or a target and what transformer parameter/operator budget should
+be required before production.

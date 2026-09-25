@@ -1,4 +1,5 @@
 import hashlib
+import json
 
 import fakeredis.aioredis as fakeredis
 import pytest
@@ -8,7 +9,7 @@ from common.exceptions import UnsupportedArchitectureError
 from common.model_registry import ModelRegistry
 from common.models import ExecutionReceipt
 from common.constants import SUPPORTED_ARCHITECTURES
-from proof_generator import ZkMLProver
+from proof_generator import ProofVerifier, ZkMLProver
 from tests.property.test_model_registry_prop import MockStorageBackend
 
 
@@ -41,12 +42,30 @@ async def test_property_6_supported_receipts_generate_and_verify(architecture, o
     cid = await storage.upload(model_binary)
     await registry.register("proof-model", cid, model_binary, architecture=architecture)
     prover = ZkMLProver(registry)
+    verifier = ProofVerifier()
 
     artifact = await prover.generate_proof(make_receipt("proof-model", cid, output))
 
-    assert prover.verify_proof(artifact)
+    assert verifier.verify(artifact)
     assert artifact.public_inputs["architecture"] == architecture
     assert artifact.public_inputs["model_hash"] == hashlib.sha256(model_binary).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_property_6_tampered_public_input_fails_independent_verifier(registry_and_storage):
+    registry, storage = registry_and_storage
+    model_binary = b"linear-private-weights"
+    cid = await storage.upload(model_binary)
+    await registry.register("tamper-model", cid, model_binary, architecture="linear")
+    prover = ZkMLProver(registry)
+    verifier = ProofVerifier()
+
+    artifact = await prover.generate_proof(make_receipt("tamper-model", cid, b"output"))
+    tampered_inputs = dict(artifact.public_inputs)
+    tampered_inputs["output_hash"] = "0" * 64
+    tampered = artifact.model_copy(update={"public_inputs": tampered_inputs})
+
+    assert not verifier.verify(tampered)
 
 
 @pytest.mark.asyncio
@@ -64,8 +83,22 @@ async def test_property_7_proof_size_is_constant_and_weights_do_not_leak(registr
     large_artifact = await prover.generate_proof(make_receipt("large", large_cid, b"large-output"))
 
     assert len(small_artifact.proof_bytes) == len(large_artifact.proof_bytes)
-    assert small_weights not in small_artifact.proof_bytes
-    assert large_weights not in large_artifact.proof_bytes
+    small_serialized = json.dumps(
+        {
+            "public_inputs": small_artifact.public_inputs,
+            "verification_key_ref": small_artifact.verification_key_ref,
+        },
+        sort_keys=True,
+    ).encode() + small_artifact.proof_bytes
+    large_serialized = json.dumps(
+        {
+            "public_inputs": large_artifact.public_inputs,
+            "verification_key_ref": large_artifact.verification_key_ref,
+        },
+        sort_keys=True,
+    ).encode() + large_artifact.proof_bytes
+    assert small_weights not in small_serialized
+    assert large_weights not in large_serialized
 
 
 @pytest.mark.asyncio
@@ -79,5 +112,5 @@ async def test_property_8_unsupported_architecture_lists_complete_supported_set(
     with pytest.raises(UnsupportedArchitectureError) as error:
         await prover.generate_proof(make_receipt("unsupported", cid, b"output"))
 
-    for architecture in SUPPORTED_ARCHITECTURES:
-        assert architecture in str(error.value)
+    assert error.value.supported == SUPPORTED_ARCHITECTURES
+    assert str(list(SUPPORTED_ARCHITECTURES)) in str(error.value)

@@ -1,8 +1,9 @@
-"""Run a real EZKL setup, proving, and verification benchmark for a tiny MLP."""
+"""Run real EZKL setup, proving, and verification benchmarks."""
 
 import json
 import sys
 import time
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -16,7 +17,76 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = ROOT / "data" / "zkml_spike"
 
 
-def build_model(path: Path) -> None:
+def save_model(path: Path, nodes, inputs, outputs, initializers, name: str) -> None:
+    graph = helper.make_graph(nodes, name, inputs, outputs, initializers)
+    model = helper.make_model(
+        graph,
+        producer_name="v1.8-ezkl-spike",
+        opset_imports=[helper.make_opsetid("", 13)],
+    )
+    model.ir_version = 8
+    onnx.checker.check_model(model)
+    onnx.save(model, path)
+
+
+def build_model(path: Path, architecture: str) -> None:
+    if architecture == "linear":
+        input_info = helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 2])
+        output_info = helper.make_tensor_value_info("output", TensorProto.FLOAT, [1, 1])
+        weights = numpy_helper.from_array(np.array([[0.5], [-0.25]], dtype=np.float32), name="weights")
+        bias = numpy_helper.from_array(np.array([0.1], dtype=np.float32), name="bias")
+        save_model(
+            path,
+            [helper.make_node("Gemm", ["input", "weights", "bias"], ["output"])],
+            [input_info], [output_info], [weights, bias], "tiny_linear",
+        )
+        return
+
+    if architecture == "cnn":
+        input_info = helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 1, 4, 4])
+        output_info = helper.make_tensor_value_info("output", TensorProto.FLOAT, [1, 1])
+        conv_weights = numpy_helper.from_array(np.ones((1, 1, 3, 3), dtype=np.float32) * 0.1, name="conv_weights")
+        conv_bias = numpy_helper.from_array(np.array([0.05], dtype=np.float32), name="conv_bias")
+        dense_weights = numpy_helper.from_array(np.array([[0.25]], dtype=np.float32), name="dense_weights")
+        dense_bias = numpy_helper.from_array(np.array([0.1], dtype=np.float32), name="dense_bias")
+        save_model(
+            path,
+            [
+                helper.make_node(
+                    "Conv",
+                    ["input", "conv_weights", "conv_bias"],
+                    ["convolved"],
+                    strides=[1, 1],
+                    pads=[0, 0, 0, 0],
+                ),
+                helper.make_node("Relu", ["convolved"], ["activated"]),
+                helper.make_node("GlobalAveragePool", ["activated"], ["pooled"]),
+                helper.make_node("Flatten", ["pooled"], ["flattened"]),
+                helper.make_node("Gemm", ["flattened", "dense_weights", "dense_bias"], ["output"]),
+            ],
+            [input_info], [output_info], [conv_weights, conv_bias, dense_weights, dense_bias], "tiny_cnn",
+        )
+        return
+
+    if architecture == "transformer_small":
+        input_info = helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 2, 2])
+        output_info = helper.make_tensor_value_info("output", TensorProto.FLOAT, [1, 2, 2])
+        projection = numpy_helper.from_array(np.eye(2, dtype=np.float32), name="projection")
+        scale = numpy_helper.from_array(np.array([[[0.5]]], dtype=np.float32), name="scale")
+        save_model(
+            path,
+            [
+                helper.make_node("MatMul", ["input", "projection"], ["projected"]),
+                helper.make_node("Mul", ["projected", "scale"], ["scaled"]),
+                helper.make_node("Softmax", ["scaled"], ["output"], axis=-1),
+            ],
+            [input_info], [output_info], [projection, scale], "tiny_transformer_small",
+        )
+        return
+
+    if architecture != "mlp":
+        raise ValueError(f"Unsupported benchmark architecture: {architecture}")
+
     input_info = helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 2])
     output_info = helper.make_tensor_value_info("output", TensorProto.FLOAT, [1, 1])
     weights_1 = numpy_helper.from_array(
@@ -27,25 +97,18 @@ def build_model(path: Path) -> None:
         np.array([[0.6], [-0.4]], dtype=np.float32), name="weights_2"
     )
     bias_2 = numpy_helper.from_array(np.array([0.05], dtype=np.float32), name="bias_2")
-    graph = helper.make_graph(
+    save_model(
+        path,
         [
             helper.make_node("Gemm", ["input", "weights_1", "bias_1"], ["hidden"]),
             helper.make_node("Relu", ["hidden"], ["activated"]),
             helper.make_node("Gemm", ["activated", "weights_2", "bias_2"], ["output"]),
         ],
-        "tiny_mlp",
         [input_info],
         [output_info],
         [weights_1, bias_1, weights_2, bias_2],
+        "tiny_mlp",
     )
-    model = helper.make_model(
-        graph,
-        producer_name="v1.7-ezkl-spike",
-        opset_imports=[helper.make_opsetid("", 13)],
-    )
-    model.ir_version = 8
-    onnx.checker.check_model(model)
-    onnx.save(model, path)
 
 
 def timed(label: str, function, *args):
@@ -54,20 +117,25 @@ def timed(label: str, function, *args):
     return result, time.perf_counter() - started
 
 
-def main() -> int:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    model_path = OUTPUT_DIR / "tiny_mlp.onnx"
-    compiled_path = OUTPUT_DIR / "tiny_mlp.compiled.onnx"
-    settings_path = OUTPUT_DIR / "settings.json"
-    data_path = OUTPUT_DIR / "input.json"
-    witness_path = OUTPUT_DIR / "witness.json"
-    srs_path = OUTPUT_DIR / "kzg.srs"
-    vk_path = OUTPUT_DIR / "vk.key"
-    pk_path = OUTPUT_DIR / "pk.key"
-    proof_path = OUTPUT_DIR / "proof.json"
+def benchmark(architecture: str) -> dict:
+    output_dir = OUTPUT_DIR / architecture
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model_path = output_dir / f"tiny_{architecture}.onnx"
+    compiled_path = output_dir / "compiled.onnx"
+    settings_path = output_dir / "settings.json"
+    data_path = output_dir / "input.json"
+    witness_path = output_dir / "witness.json"
+    srs_path = output_dir / "kzg.srs"
+    vk_path = output_dir / "vk.key"
+    pk_path = output_dir / "pk.key"
+    proof_path = output_dir / "proof.json"
 
-    build_model(model_path)
-    data_path.write_text(json.dumps({"input_data": [[1.0, 2.0]]}))
+    build_model(model_path, architecture)
+    if architecture in {"cnn", "transformer_small"}:
+        ezkl.gen_random_data(str(model_path), str(data_path), seed=20260926, min=-1.0, max=1.0)
+    else:
+        input_data = [[1.0, 2.0]]
+        data_path.write_text(json.dumps({"input_data": input_data}))
 
     timings = {}
     _, timings["gen_settings"] = timed("gen_settings", ezkl.gen_settings, str(model_path), str(settings_path))
@@ -97,21 +165,36 @@ def main() -> int:
         "verify", ezkl.verify, str(proof_path), str(settings_path), str(vk_path), str(srs_path)
     )
 
-    result = {
+    return {
         "toolchain": "ezkl",
         "ezkl_version": getattr(ezkl, "__version__", "unknown"),
-        "model": "tiny 2-layer MLP",
+        "architecture": architecture,
+        "model": f"tiny {architecture} ONNX model",
         "verified": bool(verified),
         "timings_seconds": timings,
         "artifact_sizes_bytes": {
             path.name: path.stat().st_size
             for path in [model_path, compiled_path, settings_path, witness_path, srs_path, vk_path, pk_path, proof_path]
         },
-        "output_directory": str(OUTPUT_DIR.relative_to(ROOT)),
+        "output_directory": str(output_dir.relative_to(ROOT)),
     }
-    (OUTPUT_DIR / "benchmark_result.json").write_text(json.dumps(result, indent=2) + "\n")
-    print(json.dumps(result, indent=2))
-    return 0 if verified else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--architecture",
+        action="append",
+        choices=["linear", "mlp", "cnn", "transformer_small"],
+        help="Architecture to benchmark; repeat for multiple architectures.",
+    )
+    args = parser.parse_args()
+    architectures = args.architecture or ["linear", "mlp", "cnn", "transformer_small"]
+    results = [benchmark(architecture) for architecture in architectures]
+    result_path = OUTPUT_DIR / "benchmark_result.json"
+    result_path.write_text(json.dumps({"toolchain": "ezkl", "benchmarks": results}, indent=2) + "\n")
+    print(json.dumps({"toolchain": "ezkl", "benchmarks": results}, indent=2))
+    return 0 if all(result["verified"] for result in results) else 1
 
 
 if __name__ == "__main__":
