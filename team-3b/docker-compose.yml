@@ -66,6 +66,8 @@ services:
     environment:
       - WEB3_WS_URL=ws://hardhat-node:8545
       - REDIS_URL=redis://redis:6379
+      - TASK_MANAGER_ADDRESS=${TASK_MANAGER_ADDRESS}
+      - ESCROW_ADDRESS=${ESCROW_ADDRESS}
     env_file:
       - .env.mock
     depends_on:
