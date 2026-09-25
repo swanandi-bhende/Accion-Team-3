@@ -46,3 +46,17 @@ the team can create the requested marker with:
 ```text
 git tag checkpoint-1-core-loop
 ```
+
+## V1.7 zkML Risk Review
+
+The proof-generator API, architecture metadata, circuit cache, 120-second
+timeout, Properties 6-8, malformed-receipt tests, and manual sanity script are
+implemented. The local spike found Circom and snarkjs binaries but no EZKL,
+ONNX, or ONNX Runtime installation. Those packages are now installed and
+importable in the project venv, and a real tiny 2-layer MLP EZKL proof has now
+verified successfully. Proof generation took 11.29 seconds and verification
+took 0.076 seconds; the proof was 17,650 bytes. EZKL is the provisional
+production candidate; the current
+`development-commitment` backend is deliberately not a zkML proof and is gated
+from production settlement. Transformer-small feasibility and measured proving
+times remain open mentor-review risks.

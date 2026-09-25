@@ -36,6 +36,7 @@ class ModelEntry(BaseModel):
     cid: str
     hash: str
     binary: Optional[bytes] = None
+    architecture: Optional[str] = None
 
 class FLTaskConfig(BaseModel):
     task_id: str

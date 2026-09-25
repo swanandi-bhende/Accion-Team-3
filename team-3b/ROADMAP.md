@@ -10,6 +10,10 @@
 	property/unit tests and gated in CI. The checkpoint is documented in
 	`docs/CHECKPOINTS.md`; no commit or tag was created in this working session.
 - **Wave 6:** zkML Proof Generator implementation.
+- **V1.7 checkpoint:** Architecture-aware proof-generator API and tests are
+    present. The current backend is explicitly a development commitment only;
+    EZKL is the provisional production candidate pending a real toolchain spike.
+    See `docs/ZKML_SPIKE.md` and `docs/ARCHITECTURE.md`.
 - **Wave 7:** Proof Submitter (batching, DLQ, on-chain submission).
 - **Wave 8:** Event Listener (blockchain monitoring, reconnect backoff).
 - **Wave 9:** Checkpoint 2 (End-to-end inference flow testing).

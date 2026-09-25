@@ -35,6 +35,10 @@ unit tests, and a CI gate backed by a Redis service container. Run
 coverage report. The review record and known limitations are in
 `docs/CHECKPOINTS.md`.
 
+Reproduce the real EZKL benchmark with `venv/bin/python
+scripts/ezkl_mlp_benchmark.py`. The measured result is written to
+`data/zkml_spike/benchmark_result.json`.
+
 ## Further Reading
 - **Requirements & Architecture:** See the design document in `/docs`.
 - **Known Gaps:** Refer to `ROADMAP.md` for items blocked on other teams.

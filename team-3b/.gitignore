@@ -54,6 +54,9 @@ mocks/contracts/typechain-types/
 logs/
 *.log
 data/
+!data/zkml_spike/
+data/zkml_spike/*
+!data/zkml_spike/benchmark_result.json
 *.sqlite3
 
 # IDEs

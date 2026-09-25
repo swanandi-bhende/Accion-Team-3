@@ -37,7 +37,8 @@ class ModelRegistry:
             model_id=model_id,
             version=int(decoded["version"]),
             cid=decoded["cid"],
-            hash=decoded["hash"]
+            hash=decoded["hash"],
+            architecture=decoded.get("architecture"),
         )
 
     async def _next_version(self, model_id: str) -> int:
@@ -45,7 +46,13 @@ class ModelRegistry:
         counter_key = f"model:{model_id}:version_counter"
         return await self.redis.incr(counter_key)
 
-    async def register(self, model_id: str, cid: str, model_binary: bytes):
+    async def register(
+        self,
+        model_id: str,
+        cid: str,
+        model_binary: bytes,
+        architecture: Optional[str] = None,
+    ):
         """Register model with CID after validating it resolves correctly."""
        
         try:
@@ -65,21 +72,29 @@ class ModelRegistry:
         latest_key = f"model:{model_id}:latest"
 
         pipeline = self.redis.pipeline()
-        pipeline.hset(key, mapping={
+        metadata = {
             "version": str(version),
             "cid": cid,
             "hash": expected_hash
-        })
+        }
+        if architecture is not None:
+            metadata["architecture"] = architecture
+        pipeline.hset(key, mapping=metadata)
         pipeline.set(latest_key, key)
         await pipeline.execute()
 
-    async def upload_model(self, model_id: str, model_binary: bytes) -> str:
+    async def upload_model(
+        self,
+        model_id: str,
+        model_binary: bytes,
+        architecture: Optional[str] = None,
+    ) -> str:
         """Upload to decentralized storage with exponential backoff on failure."""
         delay = self.UPLOAD_BACKOFF_BASE
         while True:
             try:
                 cid = await self.storage.upload(model_binary)
-                await self.register(model_id, cid, model_binary)
+                await self.register(model_id, cid, model_binary, architecture=architecture)
                 return cid
             except StorageUnavailableError:
                 await asyncio.sleep(delay)

@@ -16,6 +16,9 @@ dependencies = [
     "redis>=5.0.0",
     "flwr>=1.7.0",
     "pydantic>=2.5.0",
+    "ezkl>=23.0.5",
+    "onnx>=1.23.0",
+    "onnxruntime>=1.30.0",
 ]
 requires-python = ">=3.10"
 
