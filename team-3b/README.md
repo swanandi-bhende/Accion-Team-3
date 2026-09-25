@@ -24,8 +24,16 @@ The system workflow follows a strict pipeline:
 1. **Clone the repository.**
 2. **Install dependencies:** Run `./setup.sh` (Requires Python 3.10+ and Docker).
 3. **Configure Environment:** Copy `.env.example` to `.env` and fill in necessary fields.
-4. **Run Tests:** `pytest tests/unit/ --tb=short`
+4. **Run Tests:** `pytest tests/unit/ tests/property/ --tb=short -v`
 5. **Start Services:** `docker-compose up -d`
+
+## Core Loop Checkpoint
+
+The V1.6 checkpoint covers Properties 1-5, 19, and 20 with Hypothesis, focused
+unit tests, and a CI gate backed by a Redis service container. Run
+`pytest --cov=inference --cov=common --cov-report=term-missing` to reproduce the
+coverage report. The review record and known limitations are in
+`docs/CHECKPOINTS.md`.
 
 ## Further Reading
 - **Requirements & Architecture:** See the design document in `/docs`.

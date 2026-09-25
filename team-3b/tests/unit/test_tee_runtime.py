@@ -1,6 +1,7 @@
 import pytest
 import asyncio
 import os
+from unittest.mock import AsyncMock, patch
 from inference.tee_runtime import TEERuntime
 from common.exceptions import TEEUnavailableError
 
@@ -32,6 +33,23 @@ async def test_model_size_constraint():
             
     with pytest.raises(ValueError, match="exceeds 500MB"):
         await rt.execute_inference(LargeMockBytes(), "hash", b"in", b"key")
+
+
+@pytest.mark.asyncio
+async def test_model_exactly_at_500mb_boundary_is_accepted():
+    rt = TEERuntime("sgx")
+    rt.initialize()
+    model_binary = type("BoundaryModel", (), {
+        "__len__": lambda self: 500 * 1024 * 1024,
+    })()
+    rt.enclave.run_isolated = AsyncMock(return_value=b"boundary-output")
+
+    with patch("inference.tee_runtime.hashlib.sha256") as sha256:
+        sha256.return_value.hexdigest.return_value = "boundary-hash"
+        output = await rt.execute_inference(model_binary, "boundary-hash", b"in", b"key")
+
+    assert output == b"boundary-output"
+    rt.enclave.run_isolated.assert_awaited_once_with(model_binary, b"in")
 
 @pytest.mark.asyncio
 async def test_concurrent_execute_isolation():

@@ -6,6 +6,9 @@
 - **Wave 3:** TEE Runtime simulation and hardware attestation logic.
 - **Wave 4:** Inference Engine setup and routing.
 - **Wave 5:** Checkpoint 1 (Integration tests for off-chain services).
+- **V1.6 checkpoint:** Core-loop properties 1-5, 19, and 20 are covered by
+	property/unit tests and gated in CI. The checkpoint is documented in
+	`docs/CHECKPOINTS.md`; no commit or tag was created in this working session.
 - **Wave 6:** zkML Proof Generator implementation.
 - **Wave 7:** Proof Submitter (batching, DLQ, on-chain submission).
 - **Wave 8:** Event Listener (blockchain monitoring, reconnect backoff).

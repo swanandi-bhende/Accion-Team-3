@@ -1,4 +1,5 @@
 import pytest
+import pytest_asyncio
 import base64
 from httpx import AsyncClient, ASGITransport
 import fakeredis.aioredis as fakeredis
@@ -20,7 +21,7 @@ from inference.app import app
 from common.model_registry import ModelRegistry
 from tests.property.test_model_registry_prop import MockStorageBackend
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def override_deps():
     redis_client = fakeredis.FakeRedis(decode_responses=False)
     storage = MockStorageBackend()
@@ -33,22 +34,12 @@ async def override_deps():
     from inference.engine import InferenceEngine
     engine = InferenceEngine(registry, tee, redis_client, timeout_s=2.0)
     
-    from inference.app import app
-    from contextlib import asynccontextmanager
+    app.state.redis_client = redis_client
+    app.state.storage_backend = storage
+    app.state.model_registry = registry
+    app.state.tee_runtime = tee
+    app.state.inference_engine = engine
 
-    # Define a completely silent lifespan that just populates the state with our mocks
-    @asynccontextmanager
-    async def mock_lifespan(app_instance):
-        print(f"\n\nMOCK LIFESPAN RUNNING on {app_instance}\n\n")
-        app_instance.state.redis_client = redis_client
-        app_instance.state.tee_runtime = tee
-        app_instance.state.inference_engine = engine
-        yield
-        print(f"\n\nMOCK LIFESPAN TEARDOWN on {app_instance}\n\n")
-    # Save old and replace
-    old_lifespan = app.router.lifespan_context
-    app.router.lifespan_context = mock_lifespan
-    
     # We must seed a valid encrypted model for tests that expect 200 OK
     model_binary = b"api_test_model"
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -59,10 +50,8 @@ async def override_deps():
 
     cid = await storage.upload(encrypted_data)
     await registry.register("api_seeded_model", cid, encrypted_data)
-    
+
     yield engine
-    
-    app.router.lifespan_context = old_lifespan
 
 @pytest.mark.asyncio
 async def test_health_check(override_deps):

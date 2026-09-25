@@ -22,6 +22,7 @@ requires-python = ">=3.10"
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4.3",
+    "pytest-cov>=4.1.0",
     "hypothesis>=6.98.0",
     "bandit>=1.7.5",
     "black>=23.12.0",

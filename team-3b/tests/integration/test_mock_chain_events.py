@@ -1,13 +1,65 @@
 import os
 import json
 import asyncio
+import subprocess
+import time
+from pathlib import Path
 import pytest
 from web3 import Web3, AsyncWeb3
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def w3():
-    # Use HTTP provider for simple local testing against hardhat node
-    return Web3(Web3.HTTPProvider('http://127.0.0.1:8545'))
+    provider_url = 'http://127.0.0.1:8545'
+    web3 = Web3(Web3.HTTPProvider(provider_url))
+
+    if not web3.is_connected():
+        project_dir = Path(__file__).resolve().parents[2] / 'mocks' / 'contracts'
+
+        if not (project_dir / 'node_modules').exists():
+            subprocess.run(['npm', 'install'], cwd=project_dir, check=True, capture_output=True, text=True)
+
+        process = subprocess.Popen(
+            ['npx', 'hardhat', 'node', '--hostname', '127.0.0.1', '--port', '8545'],
+            cwd=project_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+        try:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if web3.is_connected():
+                    break
+                time.sleep(0.5)
+
+            if not web3.is_connected():
+                output = ''
+                if process.stdout is not None:
+                    try:
+                        output = process.stdout.read()
+                    except Exception:
+                        output = ''
+                raise RuntimeError(f'Hardhat node failed to start for mock-chain test. Output: {output}')
+        finally:
+            if process.poll() is not None and process.stdout is not None:
+                try:
+                    process.stdout.close()
+                except Exception:
+                    pass
+
+        yield web3
+
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=10)
+        return
+
+    yield web3
 
 def load_abi(contract_name):
     path = f"mocks/contracts/artifacts/contracts/{contract_name}.sol/{contract_name}.json"

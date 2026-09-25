@@ -18,39 +18,51 @@ from common.storage.ipfs_backend import IPFSBackend
 from inference.tee_runtime import TEERuntime
 from inference.engine import InferenceEngine
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+def build_app_state(app: FastAPI):
+    if hasattr(app.state, "inference_engine"):
+        return app.state
+
     settings = get_settings()
-    
+
     redis_client = redis.Redis.from_url(settings.redis_url)
     storage_backend = IPFSBackend(node_url=settings.model_storage_url)
     model_registry = ModelRegistry(redis_client, storage_backend)
-    
+
     tee_runtime = TEERuntime(settings.tee_mode)
     tee_runtime.initialize()
-    
+
     inference_engine = InferenceEngine(
         registry=model_registry,
         tee=tee_runtime,
         redis_client=redis_client,
         timeout_s=settings.tee_inference_timeout_s
     )
-    
+
     app.state.redis_client = redis_client
     app.state.storage_backend = storage_backend
     app.state.model_registry = model_registry
     app.state.tee_runtime = tee_runtime
     app.state.inference_engine = inference_engine
-    
+    return app.state
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    state = build_app_state(app)
     yield
-    
-    tee_runtime.shutdown()
-    await redis_client.close()
+    tee_runtime = getattr(state, "tee_runtime", None)
+    redis_client = getattr(state, "redis_client", None)
+    if tee_runtime is not None:
+        tee_runtime.shutdown()
+    if redis_client is not None:
+        await redis_client.close()
 
 app = FastAPI(title="Inference Service", lifespan=lifespan)
 
 # Dependency Injector
 def get_inference_engine(request: Request) -> InferenceEngine:
+    if not hasattr(request.app.state, "inference_engine"):
+        build_app_state(request.app)
     return request.app.state.inference_engine
 
 # Exception Handlers
@@ -77,17 +89,19 @@ async def execute_inference(request: InferenceRequest, engine: InferenceEngine =
 
 @app.get("/health")
 async def health_check(request: Request):
+    if not hasattr(request.app.state, "tee_runtime") or not hasattr(request.app.state, "redis_client"):
+        build_app_state(request.app)
+
     tee_runtime = getattr(request.app.state, 'tee_runtime', None)
     redis_client = getattr(request.app.state, 'redis_client', None)
-    
+
     health_status = {
         "status": "ok",
         "tee_initialized": tee_runtime._initialized if tee_runtime else False,
         "redis": "unknown",
         "storage": "unknown"
     }
-    
-    # Check Redis
+
     if redis_client:
         try:
             await redis_client.ping()
@@ -98,10 +112,8 @@ async def health_check(request: Request):
     else:
         health_status["redis"] = "down"
         health_status["status"] = "degraded"
-        
-    # We could check IPFS storage here via a simple request if we had a ping method, 
-    # but let's just mark it degraded if redis is down for now, or assume up
-    health_status["storage"] = "up" # Simplified for this check
+
+    health_status["storage"] = "up" if health_status["redis"] == "up" else "down"
 
     status_code = 200 if health_status["status"] == "ok" else 503
     return JSONResponse(status_code=status_code, content=health_status)

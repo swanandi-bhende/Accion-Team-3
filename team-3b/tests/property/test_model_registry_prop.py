@@ -34,7 +34,7 @@ def storage():
 def registry(redis_client, storage):
     return ModelRegistry(redis_client, storage)
 
-@settings(max_examples=10)
+@settings(max_examples=25)
 @given(model_id=st.text(min_size=1, max_size=20), model_binary=st.binary(min_size=1, max_size=100))
 @pytest.mark.asyncio
 async def test_property_19_model_registry_round_trip(model_id, model_binary):
@@ -59,11 +59,11 @@ async def test_property_19_model_registry_round_trip(model_id, model_binary):
     
 
 
-@settings(max_examples=10)
+@settings(max_examples=25)
 @given(model_id=st.text(min_size=1, max_size=20), model_binary=st.binary(min_size=1, max_size=100))
 @pytest.mark.asyncio
 async def test_property_20_cid_validation_before_reference(model_id, model_binary):
-    """Property 20: Invalid CID rejected before registration."""
+    """Property 20: A CID must resolve to exactly the expected model bytes."""
     redis_client = fakeredis.FakeRedis(decode_responses=False)
     storage = MockStorageBackend()
     registry = ModelRegistry(redis_client, storage)
@@ -72,6 +72,14 @@ async def test_property_20_cid_validation_before_reference(model_id, model_binar
     
     with pytest.raises(IntegrityCheckFailedError):
         await registry.register(model_id, invalid_cid, model_binary)
+
+    valid_cid = await storage.upload(model_binary)
+    storage.store[valid_cid] = b"tampered-content"
+
+    with pytest.raises(IntegrityCheckFailedError):
+        await registry.register(model_id, valid_cid, model_binary)
+
+    assert await registry.get(model_id) is None
         
 
 

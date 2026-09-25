@@ -1,6 +1,7 @@
 import pytest
 import asyncio
 import hashlib
+from unittest.mock import AsyncMock
 from hypothesis import given, settings, strategies as st, HealthCheck
 import fakeredis.aioredis as fakeredis
 
@@ -33,7 +34,7 @@ def tee():
 def engine(registry, tee, redis_client):
     return InferenceEngine(registry, tee, redis_client, timeout_s=5.0)
 
-@settings(max_examples=10, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(max_examples=10, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(model_binary=st.binary(min_size=16, max_size=100), input_data=st.binary(min_size=1, max_size=100))
 @pytest.mark.asyncio
 async def test_property_1_execution_receipt(engine, registry, storage, model_binary, input_data):
@@ -61,7 +62,7 @@ async def test_property_1_execution_receipt(engine, registry, storage, model_bin
     assert receipt.output_hash == expected_output_hash
     assert receipt.model_id == model_id
 
-@settings(max_examples=10, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(max_examples=25, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(
     input1=st.binary(min_size=1, max_size=100), 
     input2=st.binary(min_size=1, max_size=100)
@@ -85,10 +86,35 @@ async def test_property_2_isolation_guarantees(engine, registry, storage, input1
     req1 = InferenceRequest(model_id=model_id, input_data=input1)
     req2 = InferenceRequest(model_id=model_id, input_data=input2)
 
-    # Fire concurrently
+    first_started = asyncio.Event()
+    second_started = asyncio.Event()
+    release_first = asyncio.Event()
+    call_count = 0
+    original_run_isolated = engine.tee.enclave.run_isolated
+
+    async def interleaved_run_isolated(model, input_data):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            first_started.set()
+            await release_first.wait()
+        else:
+            await first_started.wait()
+            second_started.set()
+        return await original_run_isolated(model, input_data)
+
+    engine.tee.enclave.run_isolated = interleaved_run_isolated
+
+    # Force request B to enter the enclave while request A is paused.
+    task1 = asyncio.create_task(engine.execute(req1))
+    await first_started.wait()
+    task2 = asyncio.create_task(engine.execute(req2))
+    await second_started.wait()
+    release_first.set()
+
     receipt1, receipt2 = await asyncio.gather(
-        engine.execute(req1),
-        engine.execute(req2)
+        task1,
+        task2,
     )
 
     # Ensure output reflects the correct input strictly (our enclave sim echoes input)
@@ -97,7 +123,7 @@ async def test_property_2_isolation_guarantees(engine, registry, storage, input1
     if input1 != input2:
         assert receipt1.output != receipt2.output
 
-@settings(max_examples=10, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(max_examples=10, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(model_id=st.text(min_size=1), input_data=st.binary(min_size=1))
 @pytest.mark.asyncio
 async def test_property_3_missing_model(engine, model_id, input_data):
