@@ -83,6 +83,7 @@ services:
     environment:
       - WEB3_RPC_URL=http://hardhat-node:8545
       - REDIS_URL=redis://redis:6379
+      - PROOF_SUBMITTER_CONTRACT_ADDRESS=${PROOF_SUBMITTER_CONTRACT_ADDRESS}
     env_file:
       - .env.mock
     depends_on:

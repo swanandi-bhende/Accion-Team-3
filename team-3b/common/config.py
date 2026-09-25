@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     # Proof Submitter
     proof_batch_window_s: float = Field(10.0, env="PROOF_BATCH_WINDOW_S")
     proof_submitter_private_key: str = Field(..., env="PROOF_SUBMITTER_PRIVATE_KEY")
+    proof_submitter_contract_address: str = Field(..., env="PROOF_SUBMITTER_CONTRACT_ADDRESS")
     
     # zkML
     zkml_proving_key_store: str = Field(..., env="ZKML_PROVING_KEY_STORE")
