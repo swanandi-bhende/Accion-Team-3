@@ -24,3 +24,13 @@ UPLOAD_BACKOFF_MAX_S = 300.0
 # TEE Constants
 MAX_MODEL_SIZE_MB = 500
 DEFAULT_INFERENCE_TIMEOUT_S = 30.0
+
+# Verification Interface
+TEE_ATTESTATION_EXPIRY_S = 24 * 60 * 60
+SUPPORTED_VERIFICATION_FORMATS = ["tee_attestation", "zkml_snark"]
+VERIFICATION_REASON_CODES = [
+    "invalid_signature",
+    "proof_mismatch",
+    "expired_attestation",
+    "malformed_proof",
+]

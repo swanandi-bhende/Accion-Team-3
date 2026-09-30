@@ -1,6 +1,6 @@
 """Common models and types for the Verifiable AI Execution subsystem."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from typing import Optional
 
 class InferenceRequest(BaseModel):
@@ -29,6 +29,28 @@ class ProofArtifact(BaseModel):
     proof_bytes: bytes
     public_inputs: dict
     verification_key_ref: str
+
+
+class VerificationRequest(BaseModel):
+    proof_format: str
+    public_inputs: dict
+    proof_bytes: Optional[bytes] = None
+    proof_reference: Optional[str] = None
+
+
+class VerificationResponse(BaseModel):
+    result: bool
+    timestamp: float
+    public_inputs: Optional[dict] = None
+    reason_code: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_result_fields(self):
+        if self.result and (self.public_inputs is None or self.reason_code is not None):
+            raise ValueError("successful verification requires public_inputs only")
+        if not self.result and (self.public_inputs is not None or self.reason_code is None):
+            raise ValueError("failed verification requires reason_code only")
+        return self
 
 class ModelEntry(BaseModel):
     model_id: str

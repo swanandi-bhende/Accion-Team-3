@@ -30,6 +30,13 @@ class EnclaveSim(Enclave):
     def signer_id(self) -> str:
         return self._signer_id
 
+    @property
+    def public_key_bytes(self) -> bytes:
+        return self._private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+
     def decrypt(self, encrypted_data: bytes, sealed_key: bytes) -> bytes:
         # Assuming AES-GCM where nonce is first 12 bytes
         if len(encrypted_data) < 12:

@@ -33,3 +33,12 @@ class UnsupportedArchitectureError(Exception):
 class StorageUnavailableError(Exception):
     """Raised when the decentralized storage backend is unreachable."""
     pass
+
+
+class UnsupportedFormatError(Exception):
+    """Raised when verification receives an unsupported proof format."""
+
+    def __init__(self, proof_format: str, supported: list[str]):
+        self.proof_format = proof_format
+        self.supported = supported
+        super().__init__(f"Unsupported proof format: {proof_format}. Supported: {supported}")
