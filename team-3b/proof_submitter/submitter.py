@@ -144,6 +144,11 @@ class ProofSubmitter:
     def _bytes32(value: str) -> bytes:
         if value.startswith("0x") and len(value) == 66:
             return bytes.fromhex(value[2:])
+        if len(value) == 64:
+            try:
+                return bytes.fromhex(value)
+            except ValueError:
+                pass
         digest = hashlib.sha256(value.encode()).digest()
         return digest
 

@@ -48,6 +48,43 @@ async def test_property_16_proof_hash_contains_proof_and_signature(task_id):
 
 
 @pytest.mark.asyncio
+async def test_property_16_transaction_payload_contains_all_batch_arrays():
+    captured = {}
+
+    class Functions:
+        def submitProofs(self, task_ids, proof_hashes, model_cids, result_hashes):
+            captured.update({"task_ids": task_ids, "proof_hashes": proof_hashes, "model_cids": model_cids, "result_hashes": result_hashes})
+            return self
+
+        def build_transaction(self, options):
+            return options
+
+        def transact(self, options):
+            return "0xtx"
+
+    class Web3:
+        class Eth:
+            accounts = ["0x0000000000000000000000000000000000000001"]
+
+            @staticmethod
+            def get_transaction_count(_account):
+                return 0
+
+            @staticmethod
+            def wait_for_transaction_receipt(_tx):
+                return {"status": 1}
+
+        eth = Eth()
+
+    instance = ProofSubmitter(Web3(), SimpleNamespace(functions=Functions()), fakeredis.FakeRedis(decode_responses=False))
+    proofs = [await instance.submit_proof(*payload("payload-one")), await instance.submit_proof(*payload("payload-two"))]
+    instance._batch_timer.cancel()
+    await instance._send_transaction(proofs)
+
+    assert len(captured["task_ids"]) == len(captured["proof_hashes"]) == len(captured["model_cids"]) == len(captured["result_hashes"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_property_17_proofs_in_window_share_one_batch():
     instance = submitter()
     captured = []
@@ -150,3 +187,38 @@ async def test_retrying_batch_does_not_capture_new_batch():
 
     assert submitted == [["old"], ["old"]]
     assert [proof.task_id for proof in instance._pending_proofs] == ["new"]
+
+
+@pytest.mark.asyncio
+async def test_business_revert_uses_same_retry_and_dlq_path():
+    instance = submitter()
+    proof = await instance.submit_proof(*payload("business-revert"))
+    instance._batch_timer.cancel()
+
+    async def revert(_proofs):
+        raise RuntimeError("contract reverted: invalid task state")
+
+    instance._send_transaction = revert
+    await instance._submit_batch([proof])
+
+    entry = json.loads((await instance.redis.lindex(instance.DLQ_KEY, 0)).decode())
+    assert entry["last_error"] == "contract reverted: invalid task state"
+    assert instance.metrics["retries"] == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_failed_batches_append_distinct_dlq_entries():
+    instance = submitter()
+    instance.sleep = lambda delay: asyncio.sleep(0)
+
+    async def fail(_proofs):
+        raise RuntimeError("concurrent failure")
+
+    instance._send_transaction = fail
+    first = await instance.submit_proof(*payload("concurrent-one"))
+    second = await instance.submit_proof(*payload("concurrent-two"))
+    instance._batch_timer.cancel()
+    await asyncio.gather(instance._submit_batch([first]), instance._submit_batch([second]))
+
+    entries = [json.loads(raw.decode()) for raw in await instance.redis.lrange(instance.DLQ_KEY, 0, -1)]
+    assert {entry["proofs"][0]["task_id"] for entry in entries} == {"concurrent-one", "concurrent-two"}

@@ -68,3 +68,33 @@ the remaining question is how proof time and proving-key size scale with the
 production model sizes. Guidance is still needed on whether 120 seconds is a
 hard maximum or a target and what transformer parameter/operator budget should
 be required before production.
+
+## V1.11 Wave 2 On-Chain Pipeline Review
+
+Properties 12-18 cover the on-chain-facing pipeline: event fields are
+extracted exactly, dispatch requires both TaskCreated and TaskFunded, persisted
+block progress limits replay work, reconnect delays are capped at 60 seconds,
+proof batches carry aligned task/proof/model/result arrays, proofs in one
+window share a transaction, and exhausted retries are preserved in Redis DLQ
+entries with a permanent-failure alert.
+
+The composite mock-chain test runs TaskCreated and TaskFunded through deployed
+Hardhat contracts, dispatches a fabricated receipt/proof pair, and confirms a
+successful submitProofs transaction. CI starts real Redis and Hardhat services,
+runs the properties and composite integration, and measures coverage for both
+components. The audit deliberately broke the ingestion expiry guard and batch
+timer reset; each test failed, and both implementations were restored.
+
+Additional coverage simulates duplicate events at new block numbers, concurrent
+DLQ failures, business-logic transaction reverts, abandoned-task cleanup, and
+real Redis persistence.
+
+Known limitations remain: the reorg test is a one-event duplicate simulation,
+not a deep multi-block reorganization; the contracts are still Team A mocks;
+and the listener uses event filters over its configured WebSocket provider
+rather than a finalized production subscription strategy. Team A addresses,
+ABIs, finality/reorg policy, and signer/network configuration are still needed
+for production integration.
+
+No commit or tag was created. The requested `checkpoint-2-onchain-pipeline`
+tag can be created by the repository owner after CI review.

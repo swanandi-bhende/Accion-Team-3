@@ -17,6 +17,9 @@
 - **Wave 7:** Proof Submitter (batching, DLQ, on-chain submission).
 - **Wave 8:** Event Listener (blockchain monitoring, reconnect backoff).
 - **Wave 9:** Checkpoint 2 (End-to-end inference flow testing).
+- **V1.11 checkpoint:** Properties 12-18, real mock-chain E2E, real Redis CI
+    coverage, retry/DLQ paths, and Wave 2 documentation are complete. No commit
+    or tag was created; Team A contract integration remains a later swap-in.
 - **Wave 10:** Federated Learning Orchestrator (Flower integration).
 - **Wave 11:** Verification Interface (API for external verifiers).
 - **Wave 12:** Pipeline wiring and Docker composition.

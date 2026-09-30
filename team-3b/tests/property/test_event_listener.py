@@ -142,6 +142,26 @@ async def test_property_14_out_of_order_events_dispatch_once_after_restart():
 
 
 @pytest.mark.asyncio
+async def test_property_14_duplicate_event_at_new_block_does_not_dispatch_twice():
+    task_id = b"task-reorg"
+    created = event({"taskId": task_id, "creator": "c", "descriptionHash": b"d", "deadline": 5000, "bountyAmount": 1}, 10)
+    funded = event({"taskId": task_id, "funder": "f", "fundedAmount": 1}, 11)
+    reorg_created = event({"taskId": task_id, "creator": "c", "descriptionHash": b"d", "deadline": 5000, "bountyAmount": 1}, 12)
+    reorg_funded = event({"taskId": task_id, "funder": "f", "fundedAmount": 1}, 13)
+    calls = []
+    redis = fakeredis.FakeRedis(decode_responses=False)
+    instance = listener(created=[created], funded=[funded], dispatch=lambda task: calls.append(task), redis=redis)
+
+    await instance._process_events(10, 11)
+    instance.task_manager = FakeContract(created=[reorg_created])
+    instance.escrow = FakeContract(funded=[reorg_funded])
+    await instance._process_events(12, 13)
+
+    assert len(calls) == 1
+    assert instance._task_events[task_id.hex()]["dispatched"] is True
+
+
+@pytest.mark.asyncio
 async def test_expired_created_event_never_enters_pending_state():
     task_id = b"expired"
     created = event({"taskId": task_id, "creator": "c", "descriptionHash": b"d", "deadline": 1000, "bountyAmount": 1}, 3)
