@@ -68,6 +68,8 @@ class ConcreteZkMLVerifier:
     async def verify(self, proof_bytes: bytes, public_inputs: dict[str, Any]) -> tuple[bool, str]:
         try:
             artifact_payload = json.loads(proof_bytes)
+            if "proof_bytes" in artifact_payload and isinstance(artifact_payload["proof_bytes"], str):
+                artifact_payload["proof_bytes"] = base64.b64decode(artifact_payload["proof_bytes"], validate=True)
             artifact = ProofArtifact.model_validate(artifact_payload)
         except Exception:
             return False, "malformed_proof"
