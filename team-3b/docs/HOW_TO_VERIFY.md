@@ -8,7 +8,7 @@ The subsystem exposes a Verification Interface over a REST API that lets anyone 
 To start the verification server locally:
 
 ```bash
-uvicorn verification.app:app --port 8000
+uvicorn "verification.app:create_default_app" --factory --port 8001
 ```
 *(Note: If you're running the full docker-compose stack, this service is exposed automatically.)*
 
@@ -17,7 +17,7 @@ uvicorn verification.app:app --port 8000
 Here is a copy-pasteable example of a successful verification request. The proof format in this example is `tee_attestation`.
 
 ```bash
-curl -X POST http://localhost:8000/verify \
+curl -X POST http://localhost:8001/verify \
   -H "Content-Type: application/json" \
   -d '{
     "proof_format": "tee_attestation",
@@ -49,7 +49,7 @@ A successful verification yields a `result: true` and mirrors the `public_inputs
 To see the system catch a tampered proof, change the `output_hash` in the `public_inputs` so it no longer matches what the enclave signed:
 
 ```bash
-curl -X POST http://localhost:8000/verify \
+curl -X POST http://localhost:8001/verify \
   -H "Content-Type: application/json" \
   -d '{
     "proof_format": "tee_attestation",
@@ -83,19 +83,21 @@ If verification fails, you will receive one of the following reason codes:
 
 # Test Summary
 
-The property‑based test suite exercises the Verification Interface thoroughly.
+The property-based suite in `tests/property/test_verification_interface.py` is the evidence behind the Verification Interface's claims. Each property runs against both proof formats where applicable, and every verification call also asserts the wall-clock latency bound from Requirement 9.1.
 
-| Property | Description | Hypothesis examples (if any) | Guarantees |
-|----------|-------------|------------------------------|-----------|
-| 21 | Correct true/false result and specific `reason_code` for each failure mode (invalid_signature, expired_attestation, proof_mismatch, malformed_proof) for both `tee_attestation` and `zkml_snark` formats. | 0 (deterministic cases) | Each failure returns the exact expected `reason_code` and completes in < 5 s. |
-| 22 | Identical behaviour when providing proof by‑value versus by‑reference (real storage resolution). | 0 (deterministic) | Result, `public_inputs` and `reason_code` match for both modes. |
-| 23 | Unsupported proof formats are rejected with a 400 error and the list of supported formats. | 50 (generated strings) | All malformed format strings raise `UnsupportedFormatError` and return the correct `supported` list. |
-| 24 | All verification calls (including error paths) complete within the 5 second latency bound. | – | Timing assertion ensures no path exceeds the limit. |
+| Property | What is tested | Hypothesis examples | Plain-English guarantee |
+|----------|----------------|---------------------|-------------------------|
+| 21 | A valid proof, plus one dedicated case per failure mode, for both `tee_attestation` and `zkml_snark` | 0 (deterministic) | A valid proof returns `result: true`; each failure returns the *exact* reason code for its cause: `invalid_signature` for a wrong signing key or a corrupt signature, `expired_attestation` for a stale report, `proof_mismatch` for tampered public inputs, and `malformed_proof` for unparseable bytes or a missing proof. |
+| 22 | By-value versus by-reference verification, resolved through a real storage backend and a real transaction decoder | 0 (deterministic) | Resolving a proof by CID or by transaction reference returns the same `result`, `public_inputs`, and `reason_code` as passing the same bytes inline, and unresolvable references fail as `malformed_proof`. |
+| 23 | Known bad format strings, plus generated strings | 12 fixed + 100 generated | Any format that is not exactly `tee_attestation` or `zkml_snark` is rejected: directly with `UnsupportedFormatError`, or over HTTP with a `400` and the supported list, catching casing and partial-match bugs. |
+| 24 | Malformed payloads and every other path | 50 generated | No verification path, including failing ones, exceeds the 5-second budget, and the HTTP endpoint returns a graceful `408 verification_timeout` rather than hanging. |
 
-These results can be reproduced by running:
+The same properties are re-checked through the live FastAPI surface (httpx ASGI transport) so that JSON serialization cannot hide a bug: valid, mismatched, malformed, by-reference, unsupported-format, and non-string-format requests, plus `/health`.
+
+Reproduce these results with:
 
 ```bash
-pytest tests/property/test_verification_interface.py --cov=verification
+pytest tests/property/test_verification_interface.py --cov=verification --cov-report=term-missing
 ```
 
-The coverage report shows 100 % of reason‑code branches exercised.
+The coverage report shows 100 % line coverage of the `verification` package, including every reason-code branch in `verifiers.py` and `interface.py`; no reason code is left unexercised.

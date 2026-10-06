@@ -67,6 +67,23 @@ class FLTaskConfig(BaseModel):
     aggregation_strategy: str = "fedavg"
     round_timeout: float = 300.0
 
+    # Strategy-specific tuning, only read by the matching aggregation strategy.
+    trim_fraction: float = 0.2
+    num_malicious_clients: int = 0
+    dp_clip_norm: float = 1.0
+    dp_noise_multiplier: float = 1.0
+    dp_num_sampled_clients: Optional[int] = None
+
+    @model_validator(mode="after")
+    def validate_strategy_parameters(self):
+        if not 0 <= self.trim_fraction < 0.5:
+            raise ValueError("trim_fraction must be in [0, 0.5)")
+        if self.num_malicious_clients < 0:
+            raise ValueError("num_malicious_clients must be non-negative")
+        if self.dp_clip_norm <= 0 or self.dp_noise_multiplier <= 0:
+            raise ValueError("dp_clip_norm and dp_noise_multiplier must be positive")
+        return self
+
 class RoundProvenance(BaseModel):
     round_number: int
     participating_clients: int

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   redis:
     image: redis:7-alpine
@@ -47,6 +45,8 @@ services:
     build: 
       context: .
       dockerfile: inference/Dockerfile
+    env_file:
+      - .env
     environment:
       - TEE_MODE=sgx
       - REDIS_URL=redis://redis:6379
@@ -68,8 +68,11 @@ services:
       - REDIS_URL=redis://redis:6379
       - TASK_MANAGER_ADDRESS=${TASK_MANAGER_ADDRESS}
       - ESCROW_ADDRESS=${ESCROW_ADDRESS}
+    # Optional, git-ignored local overrides (e.g. values decoded from the
+    # hardhat deployment). See docs/DEV_SETUP.md; absent by default.
     env_file:
-      - .env.mock
+      - path: .env.mock
+        required: false
     depends_on:
       redis:
         condition: service_healthy
@@ -85,7 +88,8 @@ services:
       - REDIS_URL=redis://redis:6379
       - PROOF_SUBMITTER_CONTRACT_ADDRESS=${PROOF_SUBMITTER_CONTRACT_ADDRESS}
     env_file:
-      - .env.mock
+      - path: .env.mock
+        required: false
     depends_on:
       redis:
         condition: service_healthy
@@ -96,24 +100,31 @@ services:
     build:
       context: .
       dockerfile: verification/Dockerfile
+    environment:
+      - MODEL_STORAGE_URL=http://ipfs:5001
     ports:
       - "8001:8001"
     depends_on:
       redis:
         condition: service_healthy
+      ipfs:
+        condition: service_started
 
   fl-orchestrator:
     build:
       context: .
       dockerfile: federated_learning/Dockerfile
     environment:
-      - FLOWER_SERVER_PORT=8080
       - REDIS_URL=redis://redis:6379
-    ports:
-      - "8080:8080"
+      - MODEL_STORAGE_URL=http://ipfs:5001
+      - FL_NUM_CLIENTS=3
+      - FL_NUM_ROUNDS=3
+      - FL_MODEL_ID=fl-demo-model
     depends_on:
       redis:
         condition: service_healthy
+      ipfs:
+        condition: service_started
 
 volumes:
   redis_data:

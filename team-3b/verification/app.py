@@ -34,3 +34,41 @@ def create_app(interface: VerificationInterface, timeout_s: float = 5.0) -> Fast
         return {"status": "ok"}
 
     return app
+
+
+def create_default_app(timeout_s: float = 5.0) -> FastAPI:
+    """Build the standalone verification service from the environment.
+
+    Serve it with::
+
+        uvicorn "verification.app:create_default_app" --factory --port 8001
+
+    Only two optional variables are read, so the verifier does not depend on the
+    blockchain/proof-submitter configuration: ``MODEL_STORAGE_URL`` (storage node)
+    and ``TEE_TRUSTED_KEYS_PATH`` (a JSON map of ``signer_id`` to hex-encoded
+    Ed25519 public key). With no trusted keys configured the endpoint still serves
+    and verifies zkML proofs, and rejects unverifiable TEE attestations as
+    ``invalid_signature``.
+    """
+    import json
+    import os
+    from pathlib import Path
+
+    from common.storage.ipfs_backend import IPFSBackend
+    from verification.resolver import StorageProofResolver
+    from verification.verifiers import ConcreteTEEVerifier, ConcreteZkMLVerifier
+
+    storage = IPFSBackend(node_url=os.environ.get("MODEL_STORAGE_URL", "http://localhost:5001"))
+    keys_path = os.environ.get("TEE_TRUSTED_KEYS_PATH")
+    trusted_keys: dict[str, bytes] = {}
+    if keys_path and Path(keys_path).exists():
+        trusted_keys = {
+            signer_id: bytes.fromhex(public_key)
+            for signer_id, public_key in json.loads(Path(keys_path).read_text(encoding="utf-8")).items()
+        }
+    interface = VerificationInterface(
+        ConcreteTEEVerifier(trusted_public_keys=trusted_keys),
+        ConcreteZkMLVerifier(),
+        StorageProofResolver(storage=storage),
+    )
+    return create_app(interface, timeout_s=timeout_s)

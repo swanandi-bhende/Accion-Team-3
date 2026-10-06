@@ -1,0 +1,158 @@
+"""Integration tests for the Federated Learning Orchestrator.
+
+Covers realistic failure scenarios and the Step 14 <-> Step 3/4/5 integration
+point: a model trained by the orchestrator must be immediately retrievable from
+the Model Registry and loadable by the Inference Engine / TEE Runtime.
+"""
+
+import hashlib
+import json
+
+import fakeredis.aioredis as fakeredis
+import numpy as np
+import pytest
+from flwr.client import NumPyClient
+
+from common.interfaces import StorageBackend
+from common.model_registry import ModelRegistry
+from common.models import FLTaskConfig, InferenceRequest
+from federated_learning.orchestrator import (
+    FederatedLearningOrchestrator,
+    NoClientsRespondedError,
+)
+from federated_learning.simulated_client import make_simulated_clients
+from inference.engine import InferenceEngine
+from inference.tee_runtime import TEERuntime
+
+BASELINE_WEIGHTS = [np.array([[1.0], [2.0]]), np.array([0.5])]
+
+
+class MockStorageBackend(StorageBackend):
+    def __init__(self):
+        self.store = {}
+
+    async def upload(self, data: bytes) -> str:
+        cid = "Qm" + hashlib.sha256(data).hexdigest()
+        self.store[cid] = data
+        return cid
+
+    async def retrieve(self, cid: str) -> bytes:
+        if cid not in self.store:
+            raise Exception("Not found")
+        return self.store[cid]
+
+
+class FixedClient(NumPyClient):
+    def __init__(self, client_id, weights=BASELINE_WEIGHTS):
+        self.client_id = client_id
+        self._weights = [np.asarray(weight, dtype=np.float64) for weight in weights]
+
+    def get_parameters(self, config):
+        return [weight.copy() for weight in self._weights]
+
+    def fit(self, parameters, config):
+        return [weight.copy() for weight in self._weights], 1, {}
+
+
+class FailingClient(FixedClient):
+    def fit(self, parameters, config):
+        raise RuntimeError(f"{self.client_id} cannot serve this round")
+
+
+class MalformedClient(FixedClient):
+    def fit(self, parameters, config):
+        return [np.zeros((7, 3))], 1, {}
+
+
+class DropoutClient(FixedClient):
+    def __init__(self, client_id, inactive_rounds):
+        super().__init__(client_id)
+        self.inactive_rounds = set(inactive_rounds)
+
+    def fit(self, parameters, config):
+        if config.get("round") in self.inactive_rounds:
+            raise RuntimeError(f"{self.client_id} dropped out in round {config['round']}")
+        return super().fit(parameters, config)
+
+
+def build(clients, model_id="fl-model"):
+    redis_client = fakeredis.FakeRedis(decode_responses=False)
+    storage = MockStorageBackend()
+    registry = ModelRegistry(redis_client, storage)
+    orchestrator = FederatedLearningOrchestrator(
+        registry, redis_client, clients, model_id=model_id, architecture="mlp"
+    )
+    return orchestrator, registry, storage, redis_client
+
+
+@pytest.mark.asyncio
+async def test_zero_responding_clients_is_a_hard_failure():
+    """Decision: zero responses fails the run rather than advancing a stale model."""
+    clients = [FailingClient("a"), FailingClient("b")]
+    orchestrator, registry, _, redis_client = build(clients)
+    config = FLTaskConfig(task_id="zero", num_clients=2, num_rounds=2)
+
+    with pytest.raises(NoClientsRespondedError):
+        await orchestrator.run_training(config)
+
+    # Nothing was recorded or stored for a round that never produced a model.
+    assert await redis_client.lrange("fl:provenance:zero", 0, -1) == []
+    assert await registry.get("fl-model") is None
+
+
+@pytest.mark.asyncio
+async def test_malformed_wrong_shaped_update_is_rejected_without_crashing():
+    clients = [FixedClient("good"), MalformedClient("bad")]
+    orchestrator, registry, _, _ = build(clients)
+    config = FLTaskConfig(task_id="malformed", num_clients=2, num_rounds=1)
+
+    result = await orchestrator.run_training(config)
+
+    assert result.provenance[0].participating_clients == 1
+    assert await registry.get("fl-model") is not None
+
+
+@pytest.mark.asyncio
+async def test_varying_participation_is_reflected_per_round():
+    clients = [
+        FixedClient("always"),
+        DropoutClient("sometimes", inactive_rounds={2}),
+        DropoutClient("seldom", inactive_rounds={2, 3}),
+    ]
+    orchestrator, _, _, redis_client = build(clients)
+    config = FLTaskConfig(task_id="varying", num_clients=3, num_rounds=3)
+
+    result = await orchestrator.run_training(config)
+
+    assert [record.participating_clients for record in result.provenance] == [3, 1, 2]
+
+    persisted = await redis_client.lrange("fl:provenance:varying", 0, -1)
+    counts = [json.loads(entry)["participating_clients"] for entry in persisted]
+    assert counts == [3, 1, 2]
+    assert [json.loads(entry)["round_number"] for entry in persisted] == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_trained_model_is_loadable_by_the_inference_pipeline():
+    clients = make_simulated_clients(3, seed=2)
+    orchestrator, registry, _, redis_client = build(clients, model_id="fl-e2e")
+    config = FLTaskConfig(task_id="e2e", num_clients=3, num_rounds=2)
+
+    result = await orchestrator.run_training(config)
+
+    entry = await registry.get("fl-e2e")
+    assert entry is not None
+    assert entry.cid == result.model_cid
+    assert entry.hash == result.model_hash
+
+    tee_runtime = TEERuntime("sgx")
+    tee_runtime.initialize()
+    try:
+        engine = InferenceEngine(registry=registry, tee=tee_runtime, redis_client=redis_client)
+        receipt = await engine.execute(InferenceRequest(model_id="fl-e2e", input_data=b"hello fl"))
+
+        assert receipt.model_id == "fl-e2e"
+        assert receipt.model_cid == result.model_cid
+        assert receipt.output_hash == hashlib.sha256(receipt.output).hexdigest()
+    finally:
+        tee_runtime.shutdown()
