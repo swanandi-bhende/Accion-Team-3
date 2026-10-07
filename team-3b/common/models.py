@@ -66,6 +66,12 @@ class FLTaskConfig(BaseModel):
     num_rounds: int
     aggregation_strategy: str = "fedavg"
     round_timeout: float = 300.0
+    # How many clients must be *connected* before a round may start. The default
+    # (None) means "all of them", which is correct for a fixed in-process roster
+    # but wedges a real network run when a participant disconnects: Flower's
+    # client manager blocks waiting for the missing client. Networks that must
+    # tolerate dropouts (Requirement 4.5) set this below num_clients.
+    min_available_clients: Optional[int] = None
 
     # Strategy-specific tuning, only read by the matching aggregation strategy.
     trim_fraction: float = 0.2
@@ -82,6 +88,8 @@ class FLTaskConfig(BaseModel):
             raise ValueError("num_malicious_clients must be non-negative")
         if self.dp_clip_norm <= 0 or self.dp_noise_multiplier <= 0:
             raise ValueError("dp_clip_norm and dp_noise_multiplier must be positive")
+        if self.min_available_clients is not None and not 1 <= self.min_available_clients <= self.num_clients:
+            raise ValueError("min_available_clients must be between 1 and num_clients")
         return self
 
 class RoundProvenance(BaseModel):

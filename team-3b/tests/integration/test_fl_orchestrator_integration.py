@@ -133,6 +133,30 @@ async def test_varying_participation_is_reflected_per_round():
 
 
 @pytest.mark.asyncio
+async def test_provenance_for_completed_rounds_survives_a_mid_run_failure():
+    """14.5: rounds that finished before a crash stay durably recorded in Redis.
+
+    Provenance is written incrementally per round (not batched at the end), so a
+    run that dies on round 3 of 4 must still leave rounds 1-2 behind for audit.
+    """
+    clients = [
+        DropoutClient("a", inactive_rounds={3}),
+        DropoutClient("b", inactive_rounds={3}),
+    ]
+    orchestrator, registry, _, redis_client = build(clients)
+    config = FLTaskConfig(task_id="crash", num_clients=2, num_rounds=4)
+
+    with pytest.raises(NoClientsRespondedError):
+        await orchestrator.run_training(config)
+
+    persisted = [json.loads(entry) for entry in await redis_client.lrange("fl:provenance:crash", 0, -1)]
+    assert [record["round_number"] for record in persisted] == [1, 2]
+    assert all(record["participating_clients"] == 2 for record in persisted)
+    # The failed round never produced a model, so nothing is registered yet.
+    assert await registry.get("fl-model") is None
+
+
+@pytest.mark.asyncio
 async def test_trained_model_is_loadable_by_the_inference_pipeline():
     clients = make_simulated_clients(3, seed=2)
     orchestrator, registry, _, redis_client = build(clients, model_id="fl-e2e")

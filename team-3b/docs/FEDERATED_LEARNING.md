@@ -17,6 +17,7 @@ the rest of the pipeline can use it.
 | `federated_learning/weights.py` | Weight serialization and the independent `weighted_average` reference |
 | `federated_learning/simulated_client.py` | `NumPyClient` implementations over a partitioned synthetic dataset |
 | `federated_learning/runner.py` | One-shot in-process entrypoint (used by the compose `fl-orchestrator` service) |
+| `federated_learning/network_runner.py` | Real gRPC runner: `server` and `client` roles over sockets (development/verification transport) |
 | `federated_learning/server_app.py` | SuperLink server entrypoint (network path) |
 | `federated_learning/client_app.py` | SuperLink client entrypoint (network path) |
 
@@ -36,7 +37,8 @@ back to FedAvg, so a config typo cannot masquerade as a normal run.
 
 Relevant `FLTaskConfig` fields: `aggregation_strategy`, `trim_fraction`,
 `num_malicious_clients`, `dp_clip_norm`, `dp_noise_multiplier`,
-`dp_num_sampled_clients`. All have safe defaults and are validated.
+`dp_num_sampled_clients`, `round_timeout`, `min_available_clients`. All have
+safe defaults and are validated.
 
 > **Deprecation caveat:** Flower marks `DPFedAvgFixed`/`DPFedAvgAdaptive` as
 > deprecated ("will be removed in future versions"). They work today, but a
@@ -57,6 +59,15 @@ leaves a durable record of rounds 1-6.
 
 - The strategy uses `min_fit_clients=1`, so a round proceeds with whatever
   subset of clients responded within `round_timeout`.
+- `round_timeout` is enforced on the network paths too, via flower's
+  `ServerConfig(round_timeout=...)`, so a client that dies mid-round is treated
+  as a non-response instead of stalling the round.
+- `min_available_clients` controls how many clients must be *connected* before a
+  round may start. It defaults to `num_clients` (correct for a fixed in-process
+  roster), but that value **wedges a real server** when a participant
+  disconnects, because Flower's client manager blocks waiting for it. Any
+  network deployment that must survive dropouts should set it below
+  `num_clients`.
 - Clients that time out are logged **by ID**, so a straggler is diagnosable
   after the fact.
 - Malformed or wrong-shaped updates are rejected and excluded, never crashing
@@ -82,6 +93,29 @@ python -m federated_learning.runner
 Environment: `REDIS_URL`, `MODEL_STORAGE_URL`, `FL_TASK_ID`,
 `FL_NUM_CLIENTS`, `FL_NUM_ROUNDS`, `FL_AGGREGATION_STRATEGY`, `FL_MODEL_ID`,
 `FL_MODEL_ARCHITECTURE`, `FL_ROUND_TIMEOUT`.
+
+### Network (gRPC) — real sockets, single host
+
+`network_runner.py` runs Flower's gRPC transport directly: a real
+`start_server` endpoint plus real `start_client` processes exchanging serialized
+messages over sockets. It is what the Wave 3 checkpoint uses to prove the
+integration works over an actual transport rather than in-process calls, and it
+is runnable by hand:
+
+```bash
+# server (blocks until all rounds finish)
+python -m federated_learning.network_runner server \
+    --address 0.0.0.0:8080 --num-clients 3 --num-rounds 3 \
+    --round-timeout 30 --redis-url redis://localhost:6379
+
+# one per participant, in separate shells/processes
+python -m federated_learning.network_runner client \
+    --address 127.0.0.1:8080 --partition-id 0 --num-partitions 3
+```
+
+Note: Flower 1.39 deprecates `start_server`/`start_client` in favour of
+SuperLink. This path is the local, testable equivalent of the same protocol and
+is **not** the chosen production transport.
 
 ### Network (SuperLink) — for real remote participants
 
@@ -145,16 +179,26 @@ updates), not confidentiality-oriented.
 ```bash
 pytest tests/property/test_fl_orchestrator.py \
        tests/integration/test_fl_orchestrator_integration.py \
+       tests/integration/test_fl_checkpoint.py \
        tests/integration/test_fl_runner.py \
        tests/integration/test_fl_network_apps.py \
        --cov=federated_learning --cov-report=term-missing
+
+# real gRPC server + client processes (slower, needs no Redis)
+pytest tests/integration/test_fl_real_network.py -m fl_network -v
 ```
 
-Covers Property 9 (aggregation equals the reference mean), Property 10 (K-of-N
-participation and per-round provenance counts), Property 11 (trained model CID
-resolves to the exact binary), every registered strategy building and
-aggregating, the provenance wrapper, the runner, and the failure scenarios
-(zero responders, malformed updates, varying dropouts).
+Covers Property 9 (aggregation equals the reference mean, checked against both
+our own implementation and Flower's actual `aggregate_fit` output), Property 10
+(K-of-N participation and per-round provenance counts), Property 11 (trained
+model CID resolves to the exact binary and runs through the TEE runtime), every
+registered strategy building and aggregating, the provenance wrapper, the
+runner, and the failure scenarios (zero responders, malformed updates, varying
+dropouts, real client disconnect, mid-run process crash).
+
+`test_fl_real_network.py` is marked `fl_network` and runs in the dedicated
+`fl-integration` CI job; the fast unit/property gate excludes it with
+`-m "not fl_network"`.
 
 ### End-to-end smoke test (no Docker required)
 

@@ -34,7 +34,9 @@ def _common_kwargs(config: FLTaskConfig) -> dict:
     return {
         "min_fit_clients": 1,  # fault tolerance: proceed with a responding subset
         "min_evaluate_clients": 1,
-        "min_available_clients": config.num_clients,
+        # Defaults to the full roster; lower it to keep a network run alive when a
+        # participant disconnects (otherwise the client manager blocks forever).
+        "min_available_clients": config.min_available_clients or config.num_clients,
     }
 
 

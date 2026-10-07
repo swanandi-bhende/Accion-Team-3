@@ -52,19 +52,28 @@ Key behaviors:
   as the round completes, so a crash on round 7 of 10 still leaves a durable
   record of rounds 1-6.
 
-### Current scope: clients are simulated, network path wired but unvalidated
+### Current scope: clients are simulated; a real transport is tested, SuperLink is not
 
 In the default path clients are **simulated locally**:
 `federated_learning/simulated_client.py` provides real
 `flwr.client.NumPyClient` instances, so Flower's own client code paths are
-exercised, but they run in-process against a synthetic regression dataset
-partitioned across clients. There is no network transport in this path.
+exercised, but they train on a synthetic regression dataset partitioned across
+clients rather than real participant data.
 
-A network path using Flower's SuperLink model is wired
-(`federated_learning/server_app.py`, `federated_learning/client_app.py`) and
-captures provenance inside `ProvenanceStrategy`, but it has **not** been
-validated end-to-end here — that requires a SuperLink runtime. The remaining
-production gaps are:
+There are two network paths on top of that:
+
+- `federated_learning/network_runner.py` runs Flower's **gRPC** transport with a
+  real server process and real client processes over sockets. It is exercised in
+  `tests/integration/test_fl_real_network.py` (a 3-client, multi-round job whose
+  loss must fall, and a run that survives a client process death mid-training).
+  Flower 1.39 deprecates this API in favour of SuperLink, so it is the
+  development and verification transport, not the chosen production one.
+- `federated_learning/server_app.py` / `client_app.py` use Flower's **SuperLink**
+  model for multi-host production and capture provenance inside
+  `ProvenanceStrategy`. This path has **not** been validated end-to-end here —
+  that requires a SuperLink runtime.
+
+The remaining production gaps are:
 
 1. validate the SuperLink deployment in staging (transport + round timing);
 2. client authentication and authorization so only approved participants can
@@ -73,6 +82,9 @@ production gaps are:
 4. cryptographic **secure aggregation** so the server never observes an
    individual participant's raw weights (robust strategies and DP are already
    available; they are integrity-oriented, not confidentiality-oriented).
+
+Behaviour under real network latency, packet loss, or many clients is unmeasured:
+the gRPC runs above were taken on loopback with three clients.
 
 See `FEDERATED_LEARNING.md` for deployment steps, the strategy table, and the
 secure-aggregation roadmap.

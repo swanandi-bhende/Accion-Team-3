@@ -98,3 +98,83 @@ for production integration.
 
 No commit or tag was created. The requested `checkpoint-2-onchain-pipeline`
 tag can be created by the repository owner after CI review.
+
+## V1.15 Wave 3 Federated Learning Review
+
+Properties 9-11 now have a real-transport counterpart, not just in-process
+coverage. The single-process tests from Step 14 exercise the genuine Flower
+`NumPyClient` and `Strategy` objects, but they call `fit`/`aggregate_fit`
+directly. This checkpoint runs an actual gRPC Flower server with three real
+client **processes** exchanging serialized messages over sockets, which is the
+layer where integration bugs actually live.
+
+`tests/property/test_fl_orchestrator.py` already covered Property 9 against both
+our own reference mean and Flower's `FedAvg.aggregate_fit` output, so the
+arithmetic was not bypassing Flower. The outstanding gap was transport: nothing
+ran the real server/client stack. `tests/integration/test_fl_real_network.py`
+closes it, and `federated_learning/network_runner.py` is a new runnable entrypoint
+(`server` and `client` roles) for that path.
+
+The audit surfaced two genuine defects in the network path, both now fixed:
+
+1. `min_available_clients` was hard-coded to `num_clients`. Flower's client
+   manager blocks until that many clients are connected before each round, so a
+   real client disconnect **wedged the server forever** -- directly violating
+   Requirement 4.5. `FLTaskConfig.min_available_clients` is now a validated,
+   optional field (default: the full roster), so a deployment that must survive
+   dropouts can lower it.
+2. `ServerConfig` was built without `round_timeout` on the SuperLink path, so
+   `FLTaskConfig.round_timeout` was silently ignored and a killed client stalled
+   the round. Both the SuperLink and gRPC runners now pass it through.
+
+Measured behaviour of a real 3-client, 4-round job on this machine (Python
+3.14, local loopback, no artificial network delay):
+
+```text
+round 1: 0.4603   (3 clients participated)
+round 2: 0.2736
+round 3: 0.1633
+round 4: 0.0979
+wall clock: ~0.9 s for the whole run (client process startup excluded)
+```
+
+Loss decreases monotonically, which is the sanity check that the aggregation and
+update loop is wired correctly rather than merely error-free. Killing one client
+process after round 1 leaves participation at 3, 2, 2, 2 with no exception
+propagating to the caller, and provenance records the reduced count exactly.
+
+Step 15.5 round-trips a trained model all the way through: `run_training` stores
+it, `ModelRegistry.get()` resolves the CID, the stored binary hashes to the
+registered hash *and* to the final round's `resulting_model_hash`, and
+`TEERuntime.execute_inference()` accepts that exact binary and returns output. A
+blob whose plaintext does not match the expected model hash is refused with
+`IntegrityCheckFailedError`.
+
+Step 15.7 kills a *separate* process running `run_training` in the middle of a
+5-round job (via `scripts/fl_crash_harness.py`) and confirms the provenance for
+the completed rounds is still in Redis and no model was registered, since the
+run never reached its final round. This tests the Step 14.5 incremental-write
+decision under a real failure instead of asserting the code mentions it.
+
+Real gRPC tests are marked `fl_network` and run in a dedicated, longer-timeout
+`fl-integration` CI job with a Redis service; the fast unit/property gate
+excludes them with `-m "not fl_network"`. The dedicated FL job runs 41 tests, of
+which two drive a real gRPC server with real client processes and one SIGKILLs a
+real training process mid-run; the full suite is 161 passing tests.
+
+Known limitations, stated plainly: the clients are still simulated (synthetic
+linear regression, not real participant data); everything was measured on
+loopback on one machine, so behaviour under real network latency, packet loss, or
+more than a handful of clients is untested; security aggregation is not
+implemented; and the SuperLink deployment path remains import- and unit-tested
+only, because it needs a running SuperLink control plane. The `flwr` legacy
+gRPC API used by `network_runner` is itself deprecated in Flower 1.39 in favour
+of SuperLink, so it is a development/verification transport rather than the
+chosen production one.
+
+No commit or tag was created. The requested `checkpoint-3-federated-learning`
+tag can be created by the repository owner after CI review:
+
+```text
+git tag checkpoint-3-federated-learning
+```

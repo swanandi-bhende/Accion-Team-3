@@ -75,3 +75,21 @@ def make_simulated_clients(num_clients: int, seed: int = 0, **kwargs) -> list[Re
         RegressionClient(f"client-{index}", features, labels, **kwargs)
         for index, (features, labels) in enumerate(partitions)
     ]
+
+
+def make_partitioned_client(
+    partition_id: int, num_partitions: int, seed: int = 0, **kwargs
+) -> RegressionClient:
+    """Build the single client that owns ``partition_id`` of a shared dataset.
+
+    Both the in-process runner and the real gRPC/SuperLink client entrypoints use
+    this, so a client's data partition depends only on its assigned id and the
+    total partition count -- exactly the contract a real participant has.
+    """
+    if not 0 <= partition_id < num_partitions:
+        raise ValueError(
+            f"partition_id {partition_id} out of range for {num_partitions} partitions"
+        )
+    partitions, _true_model = make_regression_partitions(num_partitions, seed=seed)
+    features, labels = partitions[partition_id]
+    return RegressionClient(f"client-{partition_id}", features, labels, **kwargs)

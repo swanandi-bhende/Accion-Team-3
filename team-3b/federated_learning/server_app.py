@@ -34,12 +34,14 @@ DEFAULT_REDIS_URL = "redis://localhost:6379"
 def load_task_config(run_config: dict[str, Any] | None = None) -> FLTaskConfig:
     """Build the task config from Flower's ``run_config`` (or sensible defaults)."""
     run_config = run_config or {}
+    min_available = run_config.get("min-available-clients")
     return FLTaskConfig(
         task_id=run_config.get("task-id", "fl-network-task"),
         num_clients=int(run_config.get("num-clients", 3)),
         num_rounds=int(run_config.get("num-rounds", 3)),
         aggregation_strategy=run_config.get("strategy", "fedavg"),
         round_timeout=float(run_config.get("round-timeout", 300.0)),
+        min_available_clients=int(min_available) if min_available is not None else None,
         trim_fraction=float(run_config.get("trim-fraction", 0.2)),
         num_malicious_clients=int(run_config.get("num-malicious-clients", 0)),
         dp_clip_norm=float(run_config.get("dp-clip-norm", 1.0)),
@@ -67,7 +69,10 @@ def server_fn(context) -> ServerAppComponents:
     )
     return ServerAppComponents(
         strategy=strategy,
-        config=ServerConfig(num_rounds=config.num_rounds),
+        # round_timeout enforces Requirement 4.5 on the network path too: a client
+        # that dies mid-round counts as a non-response and the round proceeds
+        # with whoever answered, rather than blocking the server indefinitely.
+        config=ServerConfig(num_rounds=config.num_rounds, round_timeout=config.round_timeout),
     )
 
 

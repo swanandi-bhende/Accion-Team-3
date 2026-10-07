@@ -52,10 +52,50 @@ jobs:
         run: pytest tests/unit/ tests/property/ --tb=short -v
 
       - name: Measure core coverage
-        run: pytest --cov=inference --cov=common --cov-report=term-missing -q
+        run: pytest --cov=inference --cov=common --cov-report=term-missing -q -m "not fl_network"
 
       - name: Run on-chain-facing integration tests
         run: pytest tests/integration/test_event_listener_mock_chain.py tests/integration/test_proof_submitter_mock_chain.py tests/integration/test_onchain_pipeline_e2e.py tests/integration/test_wave2_real_redis.py --tb=short -v
 
       - name: Measure Wave 2 coverage
-        run: pytest --cov=event_listener --cov=proof_submitter --cov-report=term-missing -q
+        run: pytest --cov=event_listener --cov=proof_submitter --cov-report=term-missing -q -m "not fl_network"
+
+  fl-integration:
+    # Real Flower server + client *processes* over gRPC, mid-run crashes against a
+    # real Redis, and the FL <-> Model Registry <-> TEE round-trip. Inherently
+    # slower than the mocked unit tests, so it gets its own gated job with a
+    # longer timeout instead of bloating the fast feedback loop -- or being
+    # skipped entirely.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run federated learning tests (reporting, in-process, and real network)
+        run: pytest tests/property/test_fl_orchestrator.py tests/integration/test_fl_orchestrator_integration.py tests/integration/test_fl_checkpoint.py tests/integration/test_fl_runner.py tests/integration/test_fl_network_apps.py tests/integration/test_fl_real_network.py --tb=short -v
+
+      - name: Measure federated learning coverage
+        env:
+          FL_REDIS_URL: redis://localhost:6379
+        run: pytest tests/integration/test_fl_checkpoint.py tests/integration/test_fl_orchestrator_integration.py tests/property/test_fl_orchestrator.py --cov=federated_learning --cov-report=term-missing -q
