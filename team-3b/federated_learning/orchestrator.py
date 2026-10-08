@@ -20,21 +20,25 @@ import asyncio
 import hashlib
 import logging
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Callable, Sequence
 
 import numpy as np
-from flwr.common import Code, FitRes, Status, ndarrays_to_parameters, parameters_to_ndarrays
+from flwr.common import (
+    Code,
+    FitRes,
+    Status,
+    ndarrays_to_parameters,
+    parameters_to_ndarrays,
+)
 from flwr.server.strategy import Strategy
 
 from common.model_registry import ModelRegistry
 from common.models import FLTaskConfig, RoundProvenance
 from federated_learning.strategies import STRATEGY_BUILDERS as _STRATEGY_BUILDERS
 from federated_learning.weights import (
-    deserialize_parameters,
     parameters_hash,
     serialize_parameters,
-    weighted_average,
 )
 
 logger = logging.getLogger(__name__)
@@ -124,13 +128,13 @@ class FederatedLearningOrchestrator:
         failures: list[tuple[str, BaseException]] = []
         timed_out: list[str] = []
 
-        for client_id, client in zip(server.client_ids, server.clients):
+        for client_id, client in zip(server.client_ids, server.clients, strict=True):
             try:
                 parameters, num_examples, metrics = await asyncio.wait_for(
                     asyncio.to_thread(client.fit, list(global_parameters), {"round": server.round_number}),
                     timeout=round_timeout,
                 )
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 timed_out.append(client_id)
                 failures.append((client_id, TimeoutError(f"{client_id} exceeded {round_timeout}s")))
                 continue
@@ -169,7 +173,7 @@ class FederatedLearningOrchestrator:
             return False
         if len(arrays) != len(expected_shapes):
             return False
-        return all(array.shape == shape for array, shape in zip(arrays, expected_shapes))
+        return all(array.shape == shape for array, shape in zip(arrays, expected_shapes, strict=True))
 
     async def _persist_provenance(self, task_id: str, record: RoundProvenance) -> None:
         await self.redis.rpush(f"{self.PROVENANCE_KEY_PREFIX}{task_id}", record.model_dump_json())

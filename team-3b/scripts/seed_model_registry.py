@@ -1,7 +1,10 @@
 import asyncio
+
 import redis.asyncio as redis
+
 from common.model_registry import ModelRegistry
 from common.storage.ipfs_backend import IPFSBackend
+
 
 async def seed_models():
     redis_client = redis.Redis(host='localhost', port=6379, db=0)

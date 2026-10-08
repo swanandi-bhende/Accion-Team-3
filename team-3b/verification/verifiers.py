@@ -28,6 +28,16 @@ def serialize_attestation(report: AttestationReport, signer_public_key: bytes) -
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
 
 
+def serialize_proof_artifact(artifact: ProofArtifact) -> bytes:
+    """Serialize a proof artifact to the wire format the zkML verifier accepts."""
+    payload = {
+        "proof_bytes": base64.b64encode(artifact.proof_bytes).decode(),
+        "public_inputs": artifact.public_inputs,
+        "verification_key_ref": artifact.verification_key_ref,
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+
+
 class ConcreteTEEVerifier:
     def __init__(self, trusted_public_keys: dict[str, bytes], expiry_s: float = TEE_ATTESTATION_EXPIRY_S):
         self.trusted_public_keys = trusted_public_keys

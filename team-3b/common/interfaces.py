@@ -1,7 +1,7 @@
 """Abstract base classes defining the core interfaces for the subsystem."""
 
 from abc import ABC, abstractmethod
-from typing import Tuple
+
 
 class StorageBackend(ABC):
     @abstractmethod
@@ -49,12 +49,12 @@ class ProofResolver(ABC):
 
 class TEEVerifier(ABC):
     @abstractmethod
-    async def verify(self, proof_bytes: bytes, public_inputs: dict) -> Tuple[bool, str]:
+    async def verify(self, proof_bytes: bytes, public_inputs: dict) -> tuple[bool, str]:
         """Verifies a TEE attestation report. Returns (is_valid, reason_code)."""
         pass
 
 class ZkMLVerifier(ABC):
     @abstractmethod
-    async def verify(self, proof_bytes: bytes, public_inputs: dict) -> Tuple[bool, str]:
+    async def verify(self, proof_bytes: bytes, public_inputs: dict) -> tuple[bool, str]:
         """Verifies a zkML proof. Returns (is_valid, reason_code)."""
         pass

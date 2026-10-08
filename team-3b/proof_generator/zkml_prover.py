@@ -12,7 +12,6 @@ import hmac
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from common.constants import SUPPORTED_ARCHITECTURES
 from common.exceptions import UnsupportedArchitectureError

@@ -2,14 +2,12 @@ import json
 import subprocess
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import fakeredis.aioredis as fakeredis
 import pytest
 from web3 import Web3
 
 from event_listener.listener import EventListener
-
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS = ROOT / "mocks" / "contracts"

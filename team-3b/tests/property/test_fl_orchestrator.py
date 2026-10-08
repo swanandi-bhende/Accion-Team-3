@@ -16,7 +16,13 @@ import fakeredis.aioredis as fakeredis
 import numpy as np
 import pytest
 from flwr.client import NumPyClient
-from flwr.common import Code, FitRes, Status, ndarrays_to_parameters, parameters_to_ndarrays
+from flwr.common import (
+    Code,
+    FitRes,
+    Status,
+    ndarrays_to_parameters,
+    parameters_to_ndarrays,
+)
 from flwr.server.strategy import FedAvg
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -27,12 +33,14 @@ from common.models import FLTaskConfig
 from federated_learning.orchestrator import (
     FederatedLearningOrchestrator,
     NoClientsRespondedError,
+)
+from federated_learning.simulated_client import make_simulated_clients
+from federated_learning.strategies import ProvenanceStrategy
+from federated_learning.weights import (
     deserialize_parameters,
     serialize_parameters,
     weighted_average,
 )
-from federated_learning.strategies import ProvenanceStrategy
-from federated_learning.simulated_client import make_simulated_clients
 
 MODEL_ID = "fl-model"
 
@@ -151,7 +159,7 @@ def test_property_9_fedavg_aggregation_matches_reference():
     flower_result = parameters_to_ndarrays(aggregated)
     reference = weighted_average(updates, weights=[10, 10, 10])
 
-    for got, expected in zip(flower_result, reference):
+    for got, expected in zip(flower_result, reference, strict=True):
         assert np.allclose(got, expected, atol=1e-9)
 
 
@@ -174,7 +182,7 @@ async def test_property_10_aggregation_proceeds_with_responding_subset(total_cli
     assert result.provenance[0].aggregation_strategy == "fedavg"
 
     aggregated = deserialize_parameters(serialize_parameters(result.final_parameters))
-    for got, expected in zip(aggregated, base_weights):
+    for got, expected in zip(aggregated, base_weights, strict=True):
         assert np.allclose(got, np.asarray(expected), atol=1e-9)
 
 
@@ -215,7 +223,7 @@ async def test_property_11_trained_model_is_stored_and_resolvable():
     stored_binary = await storage.retrieve(entry.cid)
     assert hashlib.sha256(stored_binary).hexdigest() == entry.hash
     restored = deserialize_parameters(stored_binary)
-    for got, expected in zip(restored, result.final_parameters):
+    for got, expected in zip(restored, result.final_parameters, strict=True):
         assert np.allclose(got, expected)
 
     persisted = await redis_client.lrange("fl:provenance:p11", 0, -1)

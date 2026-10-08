@@ -38,7 +38,10 @@ from common.interfaces import StorageBackend
 from common.model_registry import ModelRegistry
 from common.models import FLTaskConfig
 from federated_learning.orchestrator import FederatedLearningOrchestrator
-from federated_learning.simulated_client import RegressionClient, make_regression_partitions
+from federated_learning.simulated_client import (
+    RegressionClient,
+    make_regression_partitions,
+)
 
 
 class InMemoryStorage(StorageBackend):

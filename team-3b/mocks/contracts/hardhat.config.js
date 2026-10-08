@@ -8,7 +8,9 @@ module.exports = {
       chainId: 31337
     },
     localhost: {
-      url: "http://127.0.0.1:8545"
+      // Compose sets WEB3_RPC_URL=http://hardhat-node:8545 so the deploy
+      // container reaches the node container instead of its own loopback.
+      url: process.env.WEB3_RPC_URL || "http://127.0.0.1:8545"
     }
   }
 };

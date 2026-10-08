@@ -3,12 +3,13 @@ import json
 
 import fakeredis.aioredis as fakeredis
 import pytest
-from hypothesis import HealthCheck, given, settings, strategies as st
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
+from common.constants import SUPPORTED_ARCHITECTURES
 from common.exceptions import UnsupportedArchitectureError
 from common.model_registry import ModelRegistry
 from common.models import ExecutionReceipt
-from common.constants import SUPPORTED_ARCHITECTURES
 from proof_generator import ProofVerifier, ZkMLProver
 from tests.property.test_model_registry_prop import MockStorageBackend
 

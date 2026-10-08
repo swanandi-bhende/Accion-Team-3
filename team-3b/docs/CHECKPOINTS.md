@@ -178,3 +178,133 @@ tag can be created by the repository owner after CI review:
 ```text
 git tag checkpoint-3-federated-learning
 ```
+
+## V1.16 Wave 3 Full Pipeline Review
+
+Every stage had its own verification by the end of Wave 2, but nothing owned the
+chain from a funded task to a settled transaction. `inference/pipeline.py` is
+that owner: it wires `EventListener -> InferenceEngine -> TEERuntime ->
+ZkMLProver -> ProofSubmitter` (plus the Step 12 verification interface) from a
+single config object, and records each task's outcome whichever way it goes.
+
+**Coupling (Step 16.2).** The listener hands off through a bounded
+`asyncio.Queue`; the stages *within* one task use direct awaited calls. The queue
+exists because the chain-poll loop must never block behind a slow TEE inference,
+and because it is the exact seam Step 17 replaces with Redis Streams — the
+in-process wiring and the multi-container deployment then keep one shape instead
+of diverging. A queue *between* stages was rejected: each stage consumes the
+previous stage's object, so an intermediate queue would add latency and a
+mid-flight checkpointing burden while decoupling nothing. Concurrency is capped
+twice on purpose: `max_in_flight` workers bound end-to-end concurrency, and a
+semaphore around the inference stage bounds TEE concurrency even for callers that
+bypass the queue.
+
+**Config (Step 16.3).** `common/config.py` is the only place that reads the
+environment. `get_settings()` is cached and typed, and `require()` fails with an
+itemized error naming *every* missing variable at once, so integration debugging
+is not one-variable-at-a-time.
+
+Writing the end-to-end test surfaced two real defects, both now fixed:
+
+1. `Pipeline` read `task["task_id"]`, but the listener's dispatch payload nests
+everything under `created`/`funded`. Every real dispatch therefore died with a
+`KeyError` before inference ever ran. `EventListener._dispatch_to_engine` had the
+same latent bug on its own default dispatch path.
+2. `TEERuntime.execute_inference` let an AEAD tag failure propagate raw, so a
+model blob that cannot be authenticated under its committed key surfaced as
+"unexpected error" instead of an integrity failure. That is the same violation as
+a plaintext hash mismatch, and it now raises `IntegrityCheckFailedError`.
+
+`ProofSubmitter` also gained `flush()` and `buffered_task_ids()`: without a way
+to force a batch out, a confirmed transaction could only be asserted by waiting
+out the 10 s batch window.
+
+**Latency (Step 16.9).** `tests/integration/test_full_pipeline_e2e.py` runs six
+funded tasks through the real mock chain, each settled by its own flush so every
+sample is a complete dispatch-to-confirmation journey (with a shared flush only
+the task that triggered it has an attributable latency). Seconds, local Hardhat
+node, in-memory storage double, dev-commitment proof backend:
+
+```text
+                 min       p50       p95       max       mean
+inference_s      0.0253    0.0291    0.0501    0.0501    0.0318
+proof_s          0.000598  0.000660  0.000953  0.000953  0.000715
+confirmation_s   0.0194    0.0211    0.0243    0.0243    0.0213
+total_s          0.0455    0.0509    0.0754    0.0754    0.0540
+```
+
+The design budget is 30 s inference + 120 s zkML + 10 s batch window + on-chain
+confirmation. The observed worst case (0.075 s) sits about 2000x inside that, but
+it is *not* evidence about the budget: inference here is the simulated enclave
+subprocess (~29 ms), the zkML "proof" is the dev-commitment backend (~0.7 ms)
+rather than real proving, storage is an in-memory double, and the chain is a
+local node with instant blocks. What the measurement does establish is the
+orchestration cost Step 16 is responsible for — hand-off to the enclave
+subprocess, hashing, artifact serialization, batch flush, and the transaction
+round trip — which accounts for the ~54 ms p50 total. Real proving time is
+unchanged by this step and remains bounded by the prover's own 120 s timeout.
+
+**Failure injection (Steps 16.6 / 16.8).**
+`tests/integration/test_pipeline_resilience.py` covers the paths *between*
+stages, which is where bugs hide from component tests:
+
+- nine tasks through three workers: peak concurrent TEE inference is exactly 3,
+the six-slot queue throttles with `PIPELINE_BACKPRESSURE` logged, and the queue
+drains to empty — a burst cannot stampede the enclave.
+- a correctly sealed blob registered under the wrong hash: that task is dropped
+as `dropped_integrity_failure` with `execution_id` and `proof_s` still null
+(proving it never reached a receipt), and the next task settles normally. A hash
+mismatch cannot succeed on retry, so it is never retried.
+- storage returning bytes that are not the committed sealed artifact: dropped as
+an integrity failure rather than through the catch-all error bucket.
+- a zkML timeout, both from a double and from the real `ZkMLProver` with
+`timeout_s=0`: the timed-out task is dropped after inference completed, and the
+healthy task still reaches the submitter.
+- a proof batch that reverts on every attempt: it is retried `MAX_RETRIES` times,
+lands in the Redis DLQ with its task ids and error text, and the *next* task
+settles on chain with status 1 — the pipeline is not stuck.
+
+Correlation ids (Step 16.5) run through every stage: `PIPELINE_ENQUEUED`,
+`PIPELINE_PROOF_READY`, `PIPELINE_PROOF_BUFFERED`, `PIPELINE_SETTLED`,
+`PIPELINE_VERIFICATION` and `PIPELINE_TASK_COMPLETE` all carry `task_id`, and
+everything after inference also carries the generated `execution_id`, so one
+task's journey is traceable from logs alone. The diagrams in
+`docs/diagrams/pipeline.md` and the new sections of `docs/ARCHITECTURE.md` are
+the map for that.
+
+The suite is now 170 collected tests, 9 of them added by this step (the two
+pipeline modules), and the two new modules run in the on-chain-facing CI step.
+168 pass deterministically (`-m "not fl_network"`); the two real-gRPC Flower
+tests in `tests/integration/test_fl_real_network.py` remain timing-sensitive — a
+client process that has not finished registering when the first round is sampled
+lowers that round's participation count — and one of the two failed once here for
+that reason while a Docker build saturated the machine. A later full run passed
+all 170; the module is excluded from the fast CI gate and runs in the dedicated
+`fl-integration` job.
+
+**What actually running the stack uncovered.** `docker compose up` had never
+succeeded for this project, and bringing it up found three defects no unit test
+could see: `hardhat-deploy` dialed `127.0.0.1:8545` from inside its own container
+and never reached the node (it now takes the node URL from `WEB3_RPC_URL` and
+waits for the RPC instead of sleeping); `event-listener` could not import a
+synchronous WebSocket provider at all, because web3 8.x only ships an
+*asynchronous* one — it now polls over HTTP with a logged warning, which is
+equivalent for a listener that uses filters rather than subscriptions; and both consumer services read the compiled contract
+ABIs from `mocks/contracts/artifacts/`, which the images did not contain, so they
+now mount that directory read-only. The result is a live stack: the deploy
+succeeds and writes `.env.mock` with all three addresses, `event-listener`
+follows the chain to its head and records `"dispatched": true` for the triggered
+task, `proof-submitter` idles against a real settlement address, the two APIs
+answer on 8000/8001, and `fl-orchestrator` completes its rounds and exits 0 (it
+is a one-shot job).
+
+Known limitations, stated plainly: `docker compose` has no service for the
+composed pipeline yet — the in-process wiring runs from
+`python -m inference.pipeline`, and giving it a container belongs to Step 17's
+multi-container work; the hand-off is still an `asyncio.Queue` rather than the
+Redis Streams transport the multi-container deployment needs; the enclave is
+`EnclaveSim`, so attestations are signed by a simulated measurement and nothing
+here is hardware-attested; and none of it has run against Team A's contracts,
+only the local mock chain.
+
+No commit or tag was created.

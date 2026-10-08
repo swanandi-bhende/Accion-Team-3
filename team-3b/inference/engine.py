@@ -1,13 +1,15 @@
-import time
 import asyncio
-import uuid
 import hashlib
+import time
+import uuid
+
 from redis.asyncio import Redis
 
-from common.models import InferenceRequest, ExecutionReceipt
-from common.model_registry import ModelRegistry
-from inference.tee_runtime import TEERuntime
 from common.exceptions import ModelNotFoundError, TimeoutExceededError
+from common.model_registry import ModelRegistry
+from common.models import ExecutionReceipt, InferenceRequest
+from inference.tee_runtime import TEERuntime
+
 
 class InferenceEngine:
     def __init__(
@@ -25,11 +27,11 @@ class InferenceEngine:
         self.sealed_key = sealed_key
 
     async def execute(self, request: InferenceRequest) -> ExecutionReceipt:
-   
+
         model_entry = await self.registry.get(request.model_id)
         if model_entry is None:
             raise ModelNotFoundError(request.model_id)
-            
+
         model_binary = await self.registry.storage.retrieve(model_entry.cid)
 
         start_time = time.time()
@@ -43,9 +45,9 @@ class InferenceEngine:
                 ),
                 timeout=self.timeout
             )
-        except asyncio.TimeoutError:
-            raise TimeoutExceededError(self.timeout)
-            
+        except TimeoutError as error:
+            raise TimeoutExceededError(self.timeout) from error
+
         duration = time.time() - start_time
 
         execution_id = str(uuid.uuid4())

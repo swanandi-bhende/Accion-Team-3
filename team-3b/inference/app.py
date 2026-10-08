@@ -1,28 +1,28 @@
-import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, Request
-from fastapi.responses import JSONResponse
-import redis.asyncio as redis
 
-from common.models import InferenceRequest, ExecutionReceipt
-from common.exceptions import (
-    ModelNotFoundError, 
-    TimeoutExceededError, 
-    TEEUnavailableError, 
-    IntegrityCheckFailedError,
-    StorageUnavailableError
-)
+import redis.asyncio as redis
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
+
 from common.config import get_settings
+from common.exceptions import (
+    IntegrityCheckFailedError,
+    ModelNotFoundError,
+    TEEUnavailableError,
+    TimeoutExceededError,
+)
 from common.model_registry import ModelRegistry
+from common.models import ExecutionReceipt, InferenceRequest
 from common.storage.ipfs_backend import IPFSBackend
-from inference.tee_runtime import TEERuntime
 from inference.engine import InferenceEngine
+from inference.tee_runtime import TEERuntime
+
 
 def build_app_state(app: FastAPI):
     if hasattr(app.state, "inference_engine"):
         return app.state
 
-    settings = get_settings()
+    settings = get_settings().require("redis_url", "tee_mode", "model_storage_url")
 
     redis_client = redis.Redis.from_url(settings.redis_url)
     storage_backend = IPFSBackend(node_url=settings.model_storage_url)

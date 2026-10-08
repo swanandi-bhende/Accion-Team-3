@@ -1,8 +1,9 @@
 """FastAPI application for external proof verification."""
 
 import asyncio
+import json
 import time
-from typing import Any
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -10,6 +11,20 @@ from fastapi.responses import JSONResponse
 from common.exceptions import UnsupportedFormatError
 from common.models import VerificationRequest
 from verification.interface import VerificationInterface
+
+
+def load_trusted_keys(path: str | None) -> dict[str, bytes]:
+    """Load a ``signer_id -> Ed25519 public key`` map from a JSON file.
+
+    Missing or unconfigured path means "trust nobody yet": the endpoint still
+    verifies zkML proofs and rejects unverifiable attestations.
+    """
+    if not path or not Path(path).exists():
+        return {}
+    return {
+        signer_id: bytes.fromhex(public_key)
+        for signer_id, public_key in json.loads(Path(path).read_text(encoding="utf-8")).items()
+    }
 
 
 def create_app(interface: VerificationInterface, timeout_s: float = 5.0) -> FastAPI:
@@ -23,7 +38,7 @@ def create_app(interface: VerificationInterface, timeout_s: float = 5.0) -> Fast
     async def verify(request: VerificationRequest):
         try:
             return await asyncio.wait_for(interface.verify(request), timeout=timeout_s)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return JSONResponse(
                 status_code=408,
                 content={"result": False, "reason_code": "verification_timeout", "timestamp": time.time()},
@@ -50,24 +65,15 @@ def create_default_app(timeout_s: float = 5.0) -> FastAPI:
     and verifies zkML proofs, and rejects unverifiable TEE attestations as
     ``invalid_signature``.
     """
-    import json
-    import os
-    from pathlib import Path
-
+    from common.config import get_settings
     from common.storage.ipfs_backend import IPFSBackend
     from verification.resolver import StorageProofResolver
     from verification.verifiers import ConcreteTEEVerifier, ConcreteZkMLVerifier
 
-    storage = IPFSBackend(node_url=os.environ.get("MODEL_STORAGE_URL", "http://localhost:5001"))
-    keys_path = os.environ.get("TEE_TRUSTED_KEYS_PATH")
-    trusted_keys: dict[str, bytes] = {}
-    if keys_path and Path(keys_path).exists():
-        trusted_keys = {
-            signer_id: bytes.fromhex(public_key)
-            for signer_id, public_key in json.loads(Path(keys_path).read_text(encoding="utf-8")).items()
-        }
+    settings = get_settings()
+    storage = IPFSBackend(node_url=settings.model_storage_url or "http://localhost:5001")
     interface = VerificationInterface(
-        ConcreteTEEVerifier(trusted_public_keys=trusted_keys),
+        ConcreteTEEVerifier(trusted_public_keys=load_trusted_keys(settings.tee_trusted_keys_path)),
         ConcreteZkMLVerifier(),
         StorageProofResolver(storage=storage),
     )

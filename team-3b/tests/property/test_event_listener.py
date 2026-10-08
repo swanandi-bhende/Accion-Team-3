@@ -1,9 +1,9 @@
-import asyncio
 from types import SimpleNamespace
 
 import fakeredis.aioredis as fakeredis
 import pytest
-from hypothesis import HealthCheck, given, settings, strategies as st
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from event_listener.listener import EventListener
 

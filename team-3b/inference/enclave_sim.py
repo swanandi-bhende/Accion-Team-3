@@ -1,11 +1,12 @@
-import os
-import ctypes
 import asyncio
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.asymmetric import ed25519
+import ctypes
+
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from common.interfaces import Enclave
+
 
 class EnclaveSim(Enclave):
     """
@@ -51,7 +52,7 @@ class EnclaveSim(Enclave):
         # In a real enclave this would be hardware isolated execution.
         # For the mock, we just run a python subprocess that echoes back a dummy result
         # to ensure it actually crosses a process boundary.
-        
+
         proc = await asyncio.create_subprocess_exec(
             'python3', '-c',
             'import sys; sys.stdout.buffer.write(b"simulated_output_for: " + sys.stdin.buffer.read())',

@@ -2,12 +2,12 @@
 
 import asyncio
 import hashlib
-import inspect
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from common.models import AttestationReport, ProofArtifact
 
@@ -92,6 +92,26 @@ class ProofSubmitter:
             self._batch_timer = None
         if proofs:
             await self._submit_batch(proofs)
+
+    def buffered_task_ids(self) -> list[str]:
+        """Task ids still waiting for the next batch flush."""
+        return [proof.task_id for proof in self._pending_proofs]
+
+    async def flush(self) -> str | None:
+        """Submit every buffered proof now instead of waiting out the batch window.
+
+        Returns the transaction hash, or ``None`` when the batch exhausted its
+        retries and was dead-lettered. Safe to call with nothing buffered.
+        """
+        async with self._batch_lock:
+            if self._batch_timer is not None:
+                self._batch_timer.cancel()
+                self._batch_timer = None
+            proofs = list(self._pending_proofs)
+            self._pending_proofs.clear()
+        if not proofs:
+            return None
+        return await self._submit_batch(proofs)
 
     async def _submit_batch(self, proofs: list[PendingProof]) -> str | None:
         last_error: Exception | None = None

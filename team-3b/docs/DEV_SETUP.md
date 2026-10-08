@@ -92,24 +92,32 @@ public and must **never** be used on a real network.
 
 **2. Produced by the mock deployment**
 
-`TASK_MANAGER_ADDRESS` and `ESCROW_ADDRESS` are emitted by
-`mocks/contracts/scripts/deploy_and_trigger.js`, which deploys the stub contracts
-and **writes them to `.env.mock`** in the repo root. Compose interpolates `.env`
-at parse time, so the mock chain has to run before the services that consume
-those addresses:
+`TASK_MANAGER_ADDRESS`, `ESCROW_ADDRESS` and `PROOF_SUBMITTER_CONTRACT_ADDRESS`
+are emitted by `mocks/contracts/scripts/deploy_and_trigger.js`, which deploys the
+stub contracts and **writes all three to `.env.mock`** in the repo root. The mock
+`TaskManager` already exposes `submitProofs` and `proof_submitter/runner.py`
+loads that ABI, so locally the settlement address is the **same address as
+`TASK_MANAGER_ADDRESS`**.
+
+`event-listener` and `proof-submitter` read that file through `env_file` (`.env`
+first, then `.env.mock`, so the mock values win). `env_file` is read at container
+**creation** time, so the consumers must be created after the deploy has run:
 
 ```bash
 docker compose up -d redis ipfs hardhat-node
 docker compose up hardhat-deploy          # deploys stubs, writes .env.mock
-# copy TASK_MANAGER_ADDRESS / ESCROW_ADDRESS from .env.mock into .env
-docker compose up -d
+docker compose up -d                      # creates the consumers with those addresses
+# if they already existed:
+docker compose up -d --force-recreate event-listener proof-submitter
 ```
 
-`PROOF_SUBMITTER_CONTRACT_ADDRESS` is **not** written by that script. The mock
-`TaskManager` already exposes `submitProofs`, and `proof_submitter/runner.py`
-loads the `TaskManager` ABI, so locally it is simply the **same address as
-`TASK_MANAGER_ADDRESS`**. That key is the one missing from `.env` today, which is
-why `docker compose config` warns about it.
+The deploy command sets `WEB3_RPC_URL=http://hardhat-node:8545` and the script
+waits for that RPC before deploying: inside the deploy container `127.0.0.1` is
+that container itself, not the node.
+
+Both consumers also mount `./mocks` read-only. `load_contract_abi` reads the
+compiled artifacts under `mocks/contracts/artifacts/`, which are git-ignored build
+output produced by that same deploy — the images ship no ABIs of their own.
 
 **3. Only another team can supply**
 
@@ -118,6 +126,13 @@ why `docker compose config` warns about it.
 | `TASK_MANAGER_ADDRESS`, `ESCROW_ADDRESS` | Team A's deployed contracts (use the mock values above for local work) |
 | `PROOF_SUBMITTER_CONTRACT_ADDRESS` | Team 3a's settlement contract exposing `submitProofs` — see `INTEGRATION_CONTRACTS.md` |
 | `WEB3_RPC_URL`, `WEB3_WS_URL` | The target chain's HTTP and WebSocket RPC endpoints |
+
+`WEB3_WS_URL` is accepted but not used as a socket today: web3 8.x ships only an
+*asynchronous* persistent `WebSocketProvider`, which the synchronous `Web3` client
+rejects. The listener logs a warning and polls the HTTP twin of that URL instead
+(`WEB3_RPC_URL` when set, otherwise `ws://` rewritten to `http://`), which is
+equivalent here because it polls with filters rather than subscribing. Real
+subscriptions would need an `AsyncWeb3` client.
 | `PROOF_SUBMITTER_PRIVATE_KEY` | A funded key on the target network |
 | `TEE_SEALED_KEY_PATH` | The real sealed key from hardware/TEE provisioning |
 | `TEE_TRUSTED_KEYS_PATH` | Public keys of the signers whose attestations you accept |
@@ -145,12 +160,12 @@ do not chase real credentials:
 ### Mock stack overrides: `.env.mock`
 
 `.env.mock` is **generated, not authored**: the deploy script writes
-`TASK_MANAGER_ADDRESS` and `ESCROW_ADDRESS` there. It is git-ignored and
-**optional** — docker-compose loads it with `required: false`, so a fresh clone
-boots even though the mock chain has never run, and `event-listener` /
-`proof-submitter` fall back to their own `environment:` block. Add
-`PROOF_SUBMITTER_PRIVATE_KEY` yourself if you want the submitter to sign with a
-specific account.
+`TASK_MANAGER_ADDRESS`, `ESCROW_ADDRESS` and `PROOF_SUBMITTER_CONTRACT_ADDRESS`
+there. It is git-ignored and **optional** — docker-compose loads it with
+`required: false`, and it is listed *after* `.env` in `env_file`, so the mock
+chain overrides whatever `.env` says while a fresh clone without it still boots.
+Add `PROOF_SUBMITTER_PRIVATE_KEY` yourself if you want the submitter to sign with
+a specific account.
 
 Because `.env.mock` is read at container **creation** time, recreate the
 consumers after the mock chain first writes it:
@@ -217,10 +232,10 @@ Engine at runtime. To pre-seed a model for manual testing, run
 - **`ValidationError` on startup:** the Inference Engine is the only service that
   calls `get_settings()`, so it is the one that refuses to boot on an incomplete
   `.env`; compare against the required-keys table above.
-- **Proof submitter exits immediately:** `PROOF_SUBMITTER_CONTRACT_ADDRESS` is
-  empty. `web3.to_checksum_address("")` raises
-  `ValueError: Unknown format '', attempted to normalize to '0x'`. Locally, point
-  it at the deployed mock `TaskManager` address (see above).
+- **Proof submitter exits immediately:** `ConfigurationError: Missing required
+  configuration ... proof_submitter_contract_address`. Run the mock deploy so
+  `.env.mock` carries the address, then
+  `docker compose up -d --force-recreate proof-submitter` (see above).
 - **`ZKML_PROVING_KEY_STORE` looks empty:** expected — `data/proving_keys/` is not
   populated and nothing reads the value yet (see “Validated but not yet read”).
   zkML proofs are generated by the development-commitment backend until EZKL is

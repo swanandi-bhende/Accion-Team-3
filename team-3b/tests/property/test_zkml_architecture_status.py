@@ -5,7 +5,6 @@ import pytest
 
 from common.constants import SUPPORTED_ARCHITECTURES
 
-
 RESULT_PATH = Path(__file__).resolve().parents[2] / "data" / "zkml_spike" / "benchmark_result.json"
 
 

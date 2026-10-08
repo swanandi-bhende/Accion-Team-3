@@ -16,13 +16,22 @@ dependencies = [
     "redis>=5.0.0",
     "flwr>=1.39.0",
     "pydantic>=2.5.0",
-    "ezkl>=23.0.5",
-    "onnx>=1.23.0",
-    "onnxruntime>=1.30.0",
+    "pydantic-settings>=2.0.0",
+    "cryptography>=46.0.0",
 ]
 requires-python = ">=3.11"
 
 [project.optional-dependencies]
+# The runtime proof path is the pure-Python development-commitment backend in
+# proof_generator/zkml_prover.py. EZKL/ONNX are only needed by the spike and
+# benchmark tooling (scripts/ezkl_mlp_benchmark.py), and ezkl==23.0.5 publishes
+# no wheel for linux/arm64 or Python 3.14 -- which is why they are not runtime
+# dependencies and why they were split out of requirements.txt.
+zkml = [
+    "ezkl>=23.0.5",
+    "onnx>=1.23.0",
+    "onnxruntime>=1.30.0",
+]
 dev = [
     "pytest>=7.4.3",
     "pytest-cov>=4.1.0",
@@ -43,6 +52,18 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+exclude = ["mocks", "data", "logs", "venv", ".ruff_cache"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+# E501 is the formatter's concern (black owns 88); B008 flags the
+# function-call-in-default-argument style used deliberately for injectable
+# dependencies (clock=time.time, sleep=asyncio.sleep).
+ignore = ["E501", "B008"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

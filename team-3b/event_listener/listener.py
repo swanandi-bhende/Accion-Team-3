@@ -10,7 +10,6 @@ from typing import Any
 
 from common.models import InferenceRequest
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -186,7 +185,11 @@ class EventListener:
     async def _dispatch_to_engine(self, task: dict[str, Any]) -> Any:
         if self.inference_engine is None:
             return None
-        request = InferenceRequest(model_id=task["created"]["description_hash"].hex(), input_data=b"", task_id=task["task_id"])
+        request = InferenceRequest(
+            model_id=task["created"]["description_hash"].hex(),
+            input_data=b"",
+            task_id=task["created"]["task_id"],
+        )
         result = self.inference_engine.execute(request)
         return await result if inspect.isawaitable(result) else result
 
@@ -210,7 +213,7 @@ class EventListener:
                 result = await result if inspect.isawaitable(result) else result
                 self._connection_state = "connected"
                 return result
-            except (ConnectionError, OSError) as error:
+            except (ConnectionError, OSError):
                 self._connection_state = "disconnected"
                 if max_attempts is not None and attempts >= max_attempts:
                     raise
@@ -228,7 +231,13 @@ class EventListener:
                 await self.sleep(poll_interval)
             except (ConnectionError, OSError):
                 self._connection_state = "disconnected"
-                await self._reconnect_with_backoff(lambda: self.web3.provider.connect())
+                connect = getattr(self.web3.provider, "connect", None)
+                if connect is None:
+                    # A pooled HTTP transport has nothing to reopen, so back off
+                    # explicitly instead of spinning this loop against a dead RPC.
+                    await self.sleep(self.RECONNECT_BASE)
+                else:
+                    await self._reconnect_with_backoff(connect)
 
     async def status(self) -> dict[str, Any]:
         return {

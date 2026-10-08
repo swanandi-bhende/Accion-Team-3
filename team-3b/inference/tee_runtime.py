@@ -1,13 +1,14 @@
 import hashlib
 import time
 from enum import Enum
-from typing import Optional
 
+from cryptography.exceptions import InvalidTag
 
-from common.exceptions import TEEUnavailableError, IntegrityCheckFailedError
+from common.exceptions import IntegrityCheckFailedError, TEEUnavailableError
+from common.interfaces import Enclave
 from common.models import AttestationReport
 from inference.enclave_sim import EnclaveSim
-from common.interfaces import Enclave
+
 
 class TEEMode(Enum):
     INTEL_SGX = "sgx"
@@ -20,7 +21,7 @@ class TEERuntime:
         except ValueError:
             self.mode = TEEMode.INTEL_SGX # default
 
-        self.enclave: Optional[Enclave] = None
+        self.enclave: Enclave | None = None
         self._initialized = False
 
     def _create_enclave(self) -> Enclave:
@@ -55,7 +56,14 @@ class TEERuntime:
             # integrity guarantees while keeping the public contract stable.
             computed_hash = hashlib.sha256(model_binary).hexdigest()
             if computed_hash != model_hash:
-                decrypted_model = self.enclave.decrypt(model_binary, sealed_key)
+                try:
+                    decrypted_model = self.enclave.decrypt(model_binary, sealed_key)
+                except InvalidTag as error:
+                    # An AEAD tag failure means the stored bytes are not the artifact
+                    # the registry committed to. That is the same violation as a
+                    # plaintext hash mismatch, so it is reported the same way rather
+                    # than escaping as a generic inference error.
+                    raise IntegrityCheckFailedError(computed_hash, model_hash) from error
                 computed_hash = hashlib.sha256(decrypted_model).hexdigest()
                 if computed_hash != model_hash:
                     raise IntegrityCheckFailedError(computed_hash, model_hash)
@@ -73,8 +81,8 @@ class TEERuntime:
 
         input_hash = hashlib.sha256(input_data).hexdigest()
         output_hash = hashlib.sha256(output).hexdigest()
-        
-        payload_to_sign = f"{self.enclave.measurement}:{self.enclave.signer_id}:{input_hash}:{output_hash}".encode('utf-8')
+
+        payload_to_sign = f"{self.enclave.measurement}:{self.enclave.signer_id}:{input_hash}:{output_hash}".encode()
         signature = self.enclave.sign(payload_to_sign)
 
         return AttestationReport(

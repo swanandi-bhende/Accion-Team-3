@@ -7,7 +7,6 @@ from common.constants import SUPPORTED_VERIFICATION_FORMATS
 from common.exceptions import UnsupportedFormatError
 from common.models import VerificationRequest, VerificationResponse
 from verification.resolver import ProofResolutionError
-from verification.verifiers import ConcreteTEEVerifier, ConcreteZkMLVerifier
 
 
 class VerificationInterface:

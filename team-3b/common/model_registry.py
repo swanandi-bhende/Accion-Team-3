@@ -1,12 +1,12 @@
 import asyncio
 import hashlib
-from typing import Optional
+
 from redis.asyncio import Redis
 
-
-from common.models import ModelEntry
+from common.exceptions import IntegrityCheckFailedError, StorageUnavailableError
 from common.interfaces import StorageBackend
-from common.exceptions import StorageUnavailableError, IntegrityCheckFailedError
+from common.models import ModelEntry
+
 
 class ModelRegistry:
     UPLOAD_BACKOFF_BASE = 5.0
@@ -16,7 +16,7 @@ class ModelRegistry:
         self.redis = redis_client
         self.storage = storage_backend
 
-    async def get(self, model_id: str, version: Optional[int] = None) -> Optional[ModelEntry]:
+    async def get(self, model_id: str, version: int | None = None) -> ModelEntry | None:
         """Resolve model by ID (latest version if version is None)."""
         if version is None:
             latest_key = f"model:{model_id}:latest"
@@ -51,10 +51,10 @@ class ModelRegistry:
         model_id: str,
         cid: str,
         model_binary: bytes,
-        architecture: Optional[str] = None,
+        architecture: str | None = None,
     ):
         """Register model with CID after validating it resolves correctly."""
-       
+
         try:
             resolved_binary = await self.storage.retrieve(cid)
         except Exception as e:
@@ -87,7 +87,7 @@ class ModelRegistry:
         self,
         model_id: str,
         model_binary: bytes,
-        architecture: Optional[str] = None,
+        architecture: str | None = None,
     ) -> str:
         """Upload to decentralized storage with exponential backoff on failure."""
         delay = self.UPLOAD_BACKOFF_BASE

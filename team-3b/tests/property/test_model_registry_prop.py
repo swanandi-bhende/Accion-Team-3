@@ -1,12 +1,14 @@
-import pytest
 import hashlib
-import asyncio
-from hypothesis import given, settings, strategies as st
-import fakeredis.aioredis as fakeredis
 
-from common.model_registry import ModelRegistry
+import fakeredis.aioredis as fakeredis
+import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
 from common.exceptions import IntegrityCheckFailedError
 from common.interfaces import StorageBackend
+from common.model_registry import ModelRegistry
+
 
 class MockStorageBackend(StorageBackend):
     def __init__(self):
@@ -56,7 +58,7 @@ async def test_property_19_model_registry_round_trip(model_id, model_binary):
     entry_v = await registry.get(model_id, version=entry.version)
     assert entry_v is not None
     assert entry_v.cid == cid
-    
+
 
 
 @settings(max_examples=25)
@@ -69,7 +71,7 @@ async def test_property_20_cid_validation_before_reference(model_id, model_binar
     registry = ModelRegistry(redis_client, storage)
 
     invalid_cid = "QmInvalid"
-    
+
     with pytest.raises(IntegrityCheckFailedError):
         await registry.register(model_id, invalid_cid, model_binary)
 
@@ -80,14 +82,14 @@ async def test_property_20_cid_validation_before_reference(model_id, model_binar
         await registry.register(model_id, valid_cid, model_binary)
 
     assert await registry.get(model_id) is None
-        
+
 
 
 def test_property_15_exponential_backoff_bounds():
     """Property 15: Exponential backoff delay bounds."""
     base = ModelRegistry.UPLOAD_BACKOFF_BASE
     max_delay = ModelRegistry.UPLOAD_BACKOFF_MAX
-    
+
     for n in range(1, 10):
         expected = min(base * (2 ** (n - 1)), max_delay)
         # We test the logic explicitly

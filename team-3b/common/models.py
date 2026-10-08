@@ -1,12 +1,13 @@
 """Common models and types for the Verifiable AI Execution subsystem."""
 
+
 from pydantic import BaseModel, model_validator
-from typing import Optional
+
 
 class InferenceRequest(BaseModel):
     model_id: str
     input_data: bytes
-    task_id: Optional[str] = None
+    task_id: str | None = None
 
 class ExecutionReceipt(BaseModel):
     execution_id: str
@@ -34,15 +35,15 @@ class ProofArtifact(BaseModel):
 class VerificationRequest(BaseModel):
     proof_format: str
     public_inputs: dict
-    proof_bytes: Optional[bytes] = None
-    proof_reference: Optional[str] = None
+    proof_bytes: bytes | None = None
+    proof_reference: str | None = None
 
 
 class VerificationResponse(BaseModel):
     result: bool
     timestamp: float
-    public_inputs: Optional[dict] = None
-    reason_code: Optional[str] = None
+    public_inputs: dict | None = None
+    reason_code: str | None = None
 
     @model_validator(mode="after")
     def validate_result_fields(self):
@@ -57,8 +58,8 @@ class ModelEntry(BaseModel):
     version: int
     cid: str
     hash: str
-    binary: Optional[bytes] = None
-    architecture: Optional[str] = None
+    binary: bytes | None = None
+    architecture: str | None = None
 
 class FLTaskConfig(BaseModel):
     task_id: str
@@ -71,14 +72,14 @@ class FLTaskConfig(BaseModel):
     # but wedges a real network run when a participant disconnects: Flower's
     # client manager blocks waiting for the missing client. Networks that must
     # tolerate dropouts (Requirement 4.5) set this below num_clients.
-    min_available_clients: Optional[int] = None
+    min_available_clients: int | None = None
 
     # Strategy-specific tuning, only read by the matching aggregation strategy.
     trim_fraction: float = 0.2
     num_malicious_clients: int = 0
     dp_clip_norm: float = 1.0
     dp_noise_multiplier: float = 1.0
-    dp_num_sampled_clients: Optional[int] = None
+    dp_num_sampled_clients: int | None = None
 
     @model_validator(mode="after")
     def validate_strategy_parameters(self):

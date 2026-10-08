@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Callable
+from collections.abc import Callable
 
 from flwr.client import start_client
 from flwr.server import start_server

@@ -35,6 +35,15 @@ class StorageUnavailableError(Exception):
     pass
 
 
+class ConfigurationError(Exception):
+    """Raised when required environment configuration is missing or invalid.
+
+    The message is itemized: every offending variable is listed at once so a
+    misconfigured deployment can be fixed in one pass instead of one variable at
+    a time.
+    """
+
+
 class UnsupportedFormatError(Exception):
     """Raised when verification receives an unsupported proof format."""
 

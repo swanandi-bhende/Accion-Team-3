@@ -48,6 +48,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
 
+      - name: Lint (ruff)
+        run: ruff check .
+
       - name: Run core loop tests
         run: pytest tests/unit/ tests/property/ --tb=short -v
 
@@ -55,7 +58,7 @@ jobs:
         run: pytest --cov=inference --cov=common --cov-report=term-missing -q -m "not fl_network"
 
       - name: Run on-chain-facing integration tests
-        run: pytest tests/integration/test_event_listener_mock_chain.py tests/integration/test_proof_submitter_mock_chain.py tests/integration/test_onchain_pipeline_e2e.py tests/integration/test_wave2_real_redis.py --tb=short -v
+        run: pytest tests/integration/test_event_listener_mock_chain.py tests/integration/test_proof_submitter_mock_chain.py tests/integration/test_onchain_pipeline_e2e.py tests/integration/test_full_pipeline_e2e.py tests/integration/test_pipeline_resilience.py tests/integration/test_wave2_real_redis.py --tb=short -v
 
       - name: Measure Wave 2 coverage
         run: pytest --cov=event_listener --cov=proof_submitter --cov-report=term-missing -q -m "not fl_network"

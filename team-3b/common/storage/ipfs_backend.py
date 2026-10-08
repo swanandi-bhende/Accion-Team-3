@@ -1,6 +1,8 @@
 import httpx
-from common.interfaces import StorageBackend
+
 from common.exceptions import StorageUnavailableError
+from common.interfaces import StorageBackend
+
 
 class IPFSBackend(StorageBackend):
     def __init__(self, node_url: str = "http://localhost:5001"):

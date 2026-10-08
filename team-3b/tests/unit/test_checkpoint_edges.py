@@ -57,8 +57,6 @@ async def test_timeout_boundary_uses_exactly_30_seconds():
     cid = await storage.upload(model_binary)
     await registry.register("timeout-boundary", cid, model_binary)
 
-    wait_for = asyncio.wait_for
-
     async def record_wait_for(awaitable, timeout):
         assert timeout == 30.0
         return await awaitable

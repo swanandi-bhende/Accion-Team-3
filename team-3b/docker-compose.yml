@@ -36,8 +36,11 @@ services:
       - .:/app
     environment:
       - TRIGGER_MOCK_TASK=true
+      # The deploy container must reach the node *container*, not its own loopback.
+      - WEB3_RPC_URL=http://hardhat-node:8545
+    # deploy_and_trigger.js waits for the chain itself, so no sleep-based race.
     command: >
-      sh -c "npm install && sleep 5 && npx hardhat run scripts/deploy_and_trigger.js --network localhost"
+      sh -c "npm install && npx hardhat run scripts/deploy_and_trigger.js --network localhost"
     depends_on:
       - hardhat-node
 
@@ -65,12 +68,20 @@ services:
       dockerfile: event_listener/Dockerfile
     environment:
       - WEB3_WS_URL=ws://hardhat-node:8545
+      # .env points at localhost, which inside this container is the container
+      # itself; the listener polls the node over the compose network instead.
+      - WEB3_RPC_URL=http://hardhat-node:8545
       - REDIS_URL=redis://redis:6379
-      - TASK_MANAGER_ADDRESS=${TASK_MANAGER_ADDRESS}
-      - ESCROW_ADDRESS=${ESCROW_ADDRESS}
-    # Optional, git-ignored local overrides (e.g. values decoded from the
-    # hardhat deployment). See docs/DEV_SETUP.md; absent by default.
+    volumes:
+      # Contract ABIs are git-ignored build output that hardhat-deploy writes
+      # into this checkout; the service reads them at startup.
+      - ./mocks:/app/mocks:ro
+    # `.env` carries the deployment addresses; the generated, git-ignored
+    # `.env.mock` is listed last so the local mock chain overrides them. See
+    # docs/DEV_SETUP.md.
     env_file:
+      - path: .env
+        required: false
       - path: .env.mock
         required: false
     depends_on:
@@ -86,8 +97,13 @@ services:
     environment:
       - WEB3_RPC_URL=http://hardhat-node:8545
       - REDIS_URL=redis://redis:6379
-      - PROOF_SUBMITTER_CONTRACT_ADDRESS=${PROOF_SUBMITTER_CONTRACT_ADDRESS}
+    volumes:
+      # Same compile-time ABI dependency as event-listener.
+      - ./mocks:/app/mocks:ro
+    # Same precedence as event-listener: `.env` first, generated mock overrides last.
     env_file:
+      - path: .env
+        required: false
       - path: .env.mock
         required: false
     depends_on:

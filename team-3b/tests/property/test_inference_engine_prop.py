@@ -1,16 +1,18 @@
-import pytest
 import asyncio
 import hashlib
-from unittest.mock import AsyncMock
-from hypothesis import given, settings, strategies as st, HealthCheck
-import fakeredis.aioredis as fakeredis
 
-from common.models import InferenceRequest
+import fakeredis.aioredis as fakeredis
+import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
+
 from common.exceptions import ModelNotFoundError
+from common.model_registry import ModelRegistry
+from common.models import InferenceRequest
 from inference.engine import InferenceEngine
 from inference.tee_runtime import TEERuntime
-from common.model_registry import ModelRegistry
 from tests.property.test_model_registry_prop import MockStorageBackend
+
 
 @pytest.fixture
 def redis_client():
@@ -40,8 +42,9 @@ def engine(registry, tee, redis_client):
 async def test_property_1_execution_receipt(engine, registry, storage, model_binary, input_data):
     """Property 1: Valid inputs produce valid receipt with correct hashes."""
     # We must mock encryption for the TEE sim to decrypt properly.
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     import os
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     sealed_key = engine.sealed_key
     aesgcm = AESGCM(sealed_key)
     nonce = os.urandom(12)
@@ -54,7 +57,7 @@ async def test_property_1_execution_receipt(engine, registry, storage, model_bin
 
     req = InferenceRequest(model_id=model_id, input_data=input_data)
     receipt = await engine.execute(req)
-    
+
     expected_input_hash = hashlib.sha256(input_data).hexdigest()
     expected_output_hash = hashlib.sha256(receipt.output).hexdigest()
 
@@ -64,7 +67,7 @@ async def test_property_1_execution_receipt(engine, registry, storage, model_bin
 
 @settings(max_examples=25, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(
-    input1=st.binary(min_size=1, max_size=100), 
+    input1=st.binary(min_size=1, max_size=100),
     input2=st.binary(min_size=1, max_size=100)
 )
 @pytest.mark.asyncio
@@ -72,8 +75,9 @@ async def test_property_2_isolation_guarantees(engine, registry, storage, input1
     """Property 2: Concurrent requests do not cross-contaminate."""
     # Register a generic mock model
     model_binary = b"concurrent_model_test"
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     import os
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     sealed_key = engine.sealed_key
     aesgcm = AESGCM(sealed_key)
     nonce = os.urandom(12)
@@ -129,7 +133,7 @@ async def test_property_2_isolation_guarantees(engine, registry, storage, input1
 async def test_property_3_missing_model(engine, model_id, input_data):
     """Property 3: Missing model raises ModelNotFoundError and logs nothing."""
     req = InferenceRequest(model_id=model_id, input_data=input_data)
-    
+
     with pytest.raises(ModelNotFoundError):
         await engine.execute(req)
 

@@ -14,7 +14,7 @@ in ``docs/FEDERATED_LEARNING.md``.
 from __future__ import annotations
 
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from flwr.common import parameters_to_ndarrays
 from flwr.server.strategy import (

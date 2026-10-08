@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import fakeredis.aioredis as fakeredis
 import pytest
-from hypothesis import given, settings, strategies as st
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from common.models import AttestationReport, ProofArtifact
 from proof_submitter import ProofSubmitter

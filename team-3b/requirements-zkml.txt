@@ -1,0 +1,19 @@
+# Optional zkML toolchain (EZKL + ONNX).
+#
+# These are NOT installed by the service images or by CI: the runtime proof path
+# is `proof_generator/zkml_prover.py`'s development-commitment backend, which is
+# pure Python. Only the EZKL spike/benchmark tooling imports these packages:
+#
+#     scripts/ezkl_mlp_benchmark.py
+#     scripts/manual_zkml_sanity_check.py
+#
+# ezkl==23.0.5 publishes no wheel for linux/arm64 or for Python 3.14, so keeping
+# it in requirements.txt made every Docker image fail to build on Apple Silicon
+# for a dependency the running code never imports.
+#
+# Install when working on the zkML toolchain evaluation:
+#
+#     pip install -r requirements-zkml.txt
+ezkl==23.0.5
+onnx==1.23.0
+onnxruntime==1.30.0

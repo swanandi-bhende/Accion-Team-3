@@ -677,6 +677,11 @@ async def test_default_app_honors_tee_trusted_keys_path(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("TEE_TRUSTED_KEYS_PATH", str(keys_path))
 
+    # ``get_settings`` is lru_cached inside ``create_default_app``, so after
+    # ``monkeypatch.setenv`` we must clear the cache so the factory re-reads the env.
+    import common.config
+    common.config.get_settings.cache_clear()
+
     trusted = await verify_with(create_default_app())
     assert trusted.status_code == 200
     assert trusted.json()["result"] is True

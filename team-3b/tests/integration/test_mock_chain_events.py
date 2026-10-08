@@ -1,11 +1,11 @@
-import os
 import json
-import asyncio
 import subprocess
 import time
 from pathlib import Path
+
 import pytest
-from web3 import Web3, AsyncWeb3
+from web3 import Web3
+
 
 @pytest.fixture(scope="session")
 def w3():
@@ -102,7 +102,7 @@ def test_mock_chain_events_and_submit(w3):
     bounty = w3.to_wei(1, 'ether')
     tx_hash = task_manager.functions.createTask(desc_hash, deadline, bounty).transact()
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-    
+
     # Parse event
     events = task_manager.events.TaskCreated().process_receipt(receipt)
     assert len(events) == 1
@@ -112,7 +112,7 @@ def test_mock_chain_events_and_submit(w3):
     # 4. Trigger TaskFunded
     tx_hash = escrow.functions.fundTask(task_id).transact({'value': bounty})
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-    
+
     # Parse event
     events = escrow.events.TaskFunded().process_receipt(receipt)
     assert len(events) == 1
@@ -123,7 +123,7 @@ def test_mock_chain_events_and_submit(w3):
     proof_hash = w3.keccak(text="proof")
     model_cid = "Qm123"
     result_hash = w3.keccak(text="result")
-    
+
     tx_hash = task_manager.functions.submitProofs(
         [task_id],
         [proof_hash],
@@ -131,5 +131,5 @@ def test_mock_chain_events_and_submit(w3):
         [result_hash]
     ).transact()
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-    
+
     assert receipt.status == 1 # Success

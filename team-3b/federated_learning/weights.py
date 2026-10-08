@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import io
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -57,11 +57,11 @@ def weighted_average(
     reference_shapes = [np.asarray(parameter).shape for parameter in updates[0]]
     accumulator = [np.zeros(shape, dtype=np.float64) for shape in reference_shapes]
 
-    for update, weight in zip(updates, weights):
+    for update, weight in zip(updates, weights, strict=True):
         arrays = [np.asarray(parameter, dtype=np.float64) for parameter in update]
         if [array.shape for array in arrays] != reference_shapes:
             raise ValueError("all updates must share the same parameter shapes")
-        for total_array, array in zip(accumulator, arrays):
+        for total_array, array in zip(accumulator, arrays, strict=True):
             total_array += array * weight
 
     return [total_array / total for total_array in accumulator]

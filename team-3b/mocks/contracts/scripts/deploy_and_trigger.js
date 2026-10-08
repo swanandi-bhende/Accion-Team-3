@@ -1,7 +1,27 @@
 const hre = require("hardhat");
 const fs = require("fs");
 
+const NODE_WAIT_TIMEOUT_MS = 60000;
+
+// Under compose the node is a separate container that may still be installing
+// dependencies, so wait for the RPC to answer instead of racing it with a sleep.
+async function waitForChain() {
+  const deadline = Date.now() + NODE_WAIT_TIMEOUT_MS;
+  for (;;) {
+    try {
+      await hre.network.provider.send("eth_chainId");
+      return;
+    } catch (error) {
+      if (Date.now() >= deadline) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+}
+
 async function main() {
+  await waitForChain();
   const [deployer] = await hre.ethers.getSigners();
   console.log("Deploying mock contracts with account:", deployer.address);
 
@@ -18,8 +38,14 @@ async function main() {
   console.log("TaskManager deployed to:", taskManagerAddress);
   console.log("Escrow deployed to:", escrowAddress);
 
-  // Write to .env.mock for local dev
-  const envMockContent = `TASK_MANAGER_ADDRESS=${taskManagerAddress}\nESCROW_ADDRESS=${escrowAddress}\n`;
+  // Write to .env.mock for local dev. The mock TaskManager also exposes
+  // submitProofs, so it *is* the local settlement contract.
+  const envMockContent = [
+    `TASK_MANAGER_ADDRESS=${taskManagerAddress}`,
+    `ESCROW_ADDRESS=${escrowAddress}`,
+    `PROOF_SUBMITTER_CONTRACT_ADDRESS=${taskManagerAddress}`,
+    "",
+  ].join("\n");
   fs.writeFileSync("../../.env.mock", envMockContent);
   console.log("Wrote addresses to .env.mock");
 

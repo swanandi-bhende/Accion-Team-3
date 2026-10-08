@@ -1,17 +1,15 @@
 """Run real EZKL setup, proving, and verification benchmarks."""
 
+import argparse
 import json
 import sys
 import time
-import argparse
 from pathlib import Path
 
+import ezkl
 import numpy as np
 import onnx
 from onnx import TensorProto, helper, numpy_helper
-
-import ezkl
-
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = ROOT / "data" / "zkml_spike"
