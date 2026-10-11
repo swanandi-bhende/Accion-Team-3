@@ -40,10 +40,7 @@ async def main() -> None:
             await submitter.flush()
         except Exception as error:
             print(f"proof-submitter: flush failed: {error}", flush=True)
-        try:
-            await redis_client.aclose()
-        except Exception:
-            pass
+        await redis_client.close()
 
     print("proof-submitter: stopped", flush=True)
     sys.exit(0)

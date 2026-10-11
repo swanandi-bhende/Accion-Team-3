@@ -223,7 +223,7 @@ Compose declares nine services. Dependencies (`depends_on`) make the real order:
 
 There is no seed service: the Model Registry is populated by the Inference
 Engine at runtime. To pre-seed a model for manual testing, run
-`python scripts/ops/seed_model_registry.py` against the same `REDIS_URL` and
+`python -m scripts.ops.seed_model_registry` against the same `REDIS_URL` and
 `MODEL_STORAGE_URL` the Engine uses.
 
 ## Troubleshooting

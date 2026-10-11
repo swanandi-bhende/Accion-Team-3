@@ -32,8 +32,7 @@ services:
       dockerfile: inference/Dockerfile
     volumes:
       - ./scripts:/app/scripts:ro
-    profiles: [debug-only]
-    command: ["python", "scripts/ops/seed_model_registry.py"]
+    command: ["python", "-m", "scripts.ops.seed_model_registry"]
     depends_on:
       redis:
         condition: service_healthy

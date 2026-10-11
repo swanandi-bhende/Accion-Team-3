@@ -8,6 +8,17 @@
 # dependencies to be *healthy* rather than merely started. See docs/DEPLOYMENT.md.
 
 services:
+  # Shared Python base image (docker/base.Dockerfile). It exits as soon as it
+  # starts; it exists so compose builds the image, and every Python service links
+  # to it through `additional_contexts: base: service:base`, which orders the builds.
+  base:
+    build:
+      context: .
+      dockerfile: docker/base.Dockerfile
+    image: accion-base:latest
+    command: ["true"]
+    restart: "no"
+
   redis:
     image: redis:7-alpine
     ports:
@@ -22,10 +33,10 @@ services:
     restart: unless-stopped
 
   ipfs:
-    image: ipfs/kubo:latest
+    image: ipfs/kubo:v0.36.0
     ports:
       - "5001:5001"
-      - "8080:8080"
+      - "${IPFS_GATEWAY_PORT:-8080}:8080"
     volumes:
       - ipfs_data:/export
     healthcheck:
@@ -80,7 +91,9 @@ services:
     build:
       context: .
       dockerfile: inference/Dockerfile
-    command: ["python", "scripts/ops/seed_model_registry.py"]
+      additional_contexts:
+        base: service:base
+    command: ["python", "-m", "scripts.ops.seed_model_registry"]
     environment:
       - REDIS_URL=redis://redis:6379
       - MODEL_STORAGE_URL=http://ipfs:5001
@@ -98,6 +111,8 @@ services:
     build:
       context: .
       dockerfile: inference/Dockerfile
+      additional_contexts:
+        base: service:base
     environment:
       - TEE_MODE=sgx
       - REDIS_URL=redis://redis:6379
@@ -121,9 +136,13 @@ services:
     restart: unless-stopped
 
   event-listener:
+    # Time for an in-flight poll pass or proof batch to finish on SIGTERM.
+    stop_grace_period: 30s
     build:
       context: .
       dockerfile: event_listener/Dockerfile
+      additional_contexts:
+        base: service:base
     environment:
       - WEB3_WS_URL=ws://hardhat-node:8545
       # .env points at localhost, which inside this container is the container
@@ -159,9 +178,13 @@ services:
     restart: unless-stopped
 
   proof-submitter:
+    # Time for an in-flight poll pass or proof batch to finish on SIGTERM.
+    stop_grace_period: 30s
     build:
       context: .
       dockerfile: proof_submitter/Dockerfile
+      additional_contexts:
+        base: service:base
       args:
         # Enable only where an EZKL wheel exists for the platform.
         INSTALL_ZKML: "false"
@@ -196,6 +219,8 @@ services:
     build:
       context: .
       dockerfile: verification/Dockerfile
+      additional_contexts:
+        base: service:base
     environment:
       - MODEL_STORAGE_URL=http://ipfs:5001
     env_file:
@@ -221,6 +246,8 @@ services:
     build:
       context: .
       dockerfile: federated_learning/Dockerfile
+      additional_contexts:
+        base: service:base
     environment:
       - REDIS_URL=redis://redis:6379
       - MODEL_STORAGE_URL=http://ipfs:5001

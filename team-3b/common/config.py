@@ -27,6 +27,9 @@ MOCK_ADDRESS_KEYS = (
     "ESCROW_ADDRESS",
     "PROOF_SUBMITTER_CONTRACT_ADDRESS",
 )
+# The all-zero address is the placeholder shipped in .env.example. It means "not
+# configured yet", so the mock deploy output replaces it.
+PLACEHOLDER_ADDRESS = "0x" + "0" * 40
 
 
 class Settings(BaseSettings):
@@ -79,13 +82,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _adopt_mock_deployments(self) -> "Settings":
-        """Fill blank contract addresses from the mock deploy output.
+        """Replace blank or placeholder contract addresses with the mock deploy output.
 
         ``docker compose up`` cannot know the mock addresses when it creates the
         consumer containers, because the deploy step writes them afterwards. With
         ``MOCK_DEPLOYMENTS_PATH`` pointing at that file, a first ``up`` therefore
-        resolves them without anyone copying values into ``.env``. An explicitly
-        configured environment variable always wins.
+        resolves them without anyone copying values into ``.env``. A real address that
+        was configured explicitly always wins.
         """
         if not self.mock_deployments_path:
             return self
@@ -95,7 +98,8 @@ class Settings(BaseSettings):
         deployments = json.loads(deployments_file.read_text(encoding="utf-8"))
         for key in MOCK_ADDRESS_KEYS:
             field = key.lower()
-            if not getattr(self, field, None) and deployments.get(key):
+            current = getattr(self, field, None)
+            if current in (None, "", PLACEHOLDER_ADDRESS) and deployments.get(key):
                 setattr(self, field, deployments[key])
         return self
 

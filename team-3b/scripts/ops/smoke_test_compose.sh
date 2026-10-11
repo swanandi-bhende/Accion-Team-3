@@ -1,153 +1,190 @@
 #!/usr/bin/env bash
-# -*- mode: shell; indent-tabs-mode: t -*-
 #
-# Smoke test for the docker-compose stack.
+# Smoke test for the docker-compose stack, run after `docker compose up -d`.
 #
-# Usage: docker compose up --build -d && scripts/ops/smoke_test_compose.sh
+#   scripts/ops/smoke_test_compose.sh
 #
-# This script validates the full stack by hitting health endpoints, confirming
-# the mock chain is reachable, and optionally triggering one real end-to-end task
-# by running the Hardhat deploy+trigger script against the live node.
+# Checks, in order, that the stack is genuinely working rather than merely started:
+#   1. every long-running service reports healthy, and one-shot jobs exited 0;
+#   2. Redis answers PING;
+#   3. the mock chain answers JSON-RPC and has code at the deployed addresses,
+#      and the event-listener is configured with those same addresses;
+#   4. the inference engine serves the seeded toy model;
+#   5. a fresh task created on the chain is dispatched by the event-listener.
+#
+# Environment overrides:
+#   SMOKE_WAIT_TIMEOUT   seconds to wait for services to become healthy (default 180)
+#   SMOKE_TASK_TIMEOUT   seconds to wait for the listener to dispatch (default 60)
+#   SMOKE_SKIP_TRIGGER   set to 1 to skip step 5
 
 set -o errexit
 set -o pipefail
 set -o nounset
 
-# Network reach is the expensive part; bail out early rather than print a page
-# of failures.
-export DEFAULT_DOCKER_TIMEOUT=30
-export COMPOSE_HTTP_TIMEOUT=60
-export COMPOSE_PROGRESS_TIMEOUT=60
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_ROOT"
 
-# The chain must be healthy before the tests can meaningfully run. Long enough
-# for a first `docker compose up` (npm install + hardhat node) and short enough
-# to fail loudly rather than hang.
-RPC_WAIT_TIMEOUT=${ROCKSDB_WAIT_TIMEOUT:-40}
+RPC_URL="http://127.0.0.1:8545"
+INFERENCE_URL="http://127.0.0.1:8000"
+VERIFICATION_URL="http://127.0.0.1:8001"
+DEPLOYMENTS_FILE="mocks/contracts/deployments/localhost.json"
+WAIT_TIMEOUT=${SMOKE_WAIT_TIMEOUT:-180}
+TASK_TIMEOUT=${SMOKE_TASK_TIMEOUT:-60}
+SKIP_TRIGGER=${SMOKE_SKIP_TRIGGER:-0}
 
-# --- helpers ----------------------------------------------------------------
+HEALTHY_SERVICES="redis ipfs hardhat-node inference-engine verification-api event-listener proof-submitter"
+ONE_SHOT_SERVICES="hardhat-deploy seed-model fl-orchestrator"
+
+ok() {
+    printf 'SERVICE=%s STATUS=succeeded %s\n' "$1" "$2"
+}
+
 fail() {
-    local service="$1"
-    local detail="${2:-}"
-    printf 'SERVICE=%s STATUS=failed REASON=%s\n' "$service" "$detail"
-    return 1
+    printf 'SERVICE=%s STATUS=failed REASON=%s\n' "$1" "$2"
+    exit 1
 }
 
-check() {
-    local service="$1"
-    local url="$2"
-    local expected_status="${3:-200}"
-    local body
-    local http_code
-    # curl returns the body in stdout; the status goes to stderr via -w.
-    body=$(curl -fsS --max-time 10 -w "%{http_code}" "$url" || true)
-    http_code="${body: -3}"
-    body="${body:0:${#body}-3}"
-    if [[ "$http_code" != "$expected_status" ]]; then
-        fail "$service" "url=$url expected_status=$expected_status actual_status=$http_code body=$(printf '%s' "$body" | head -c 200)"
-        return 1
-    fi
-    printf 'SERVICE=%s STATUS=succeeded endpoint=%s status=%s\n' "$service" "$url" "$http_code"
-    return 0
+rpc() {
+    curl -fsS --max-time 10 -X POST "$RPC_URL" \
+        -H 'content-type: application/json' \
+        -d "{\"jsonrpc\":\"2.0\",\"method\":\"$1\",\"params\":$2,\"id\":1}"
 }
 
-wait_for_rpc() {
-    local url="${1:-http://127.0.0.1:8545}"
-    local deadline
-    deadline=$(( "$(date +%s)" + RPC_WAIT_TIMEOUT ))
+json_field() {
+    python3 -c "import json,sys; print(json.load(sys.stdin)$1)"
+}
+
+# 1. Every service is healthy (or, for one-shot jobs, exited 0). Compose reports
+#    health asynchronously, so poll until the deadline rather than sampling once.
+wait_for_services() {
+    local deadline=$(( $(date +%s) + WAIT_TIMEOUT ))
+    local report
     while true; do
-        if curl -fsS --max-time 5 -X POST "$url" \
-            -H 'content-type: application/json' \
-            -d '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}' \
-            >/dev/null 2>&1; then
-            printf 'SERVICE=hardhat-node STATUS=succeeded url=%s\n' "$url"
+        report=$(docker compose ps -a --format json 2>/dev/null || true)
+        if status_report "$report"; then
             return 0
         fi
-        if [[ "$(date +%s)" -ge "$deadline" ]]; then
-            fail "hardhat-node" "rpc not reachable after ${RPC_WAIT_TIMEOUT}s url=$url"
-            return 1
+        if [[ $(date +%s) -ge $deadline ]]; then
+            status_report "$report" --print || true
+            fail "stack" "services not ready after ${WAIT_TIMEOUT}s"
         fi
-        sleep 1
+        sleep 3
     done
 }
 
-# --- trigger a real task via the Hardhat deploy+trigger script ---------------
-trigger_real_task() {
-    local deploy_script="mocks/contracts/scripts/deploy_and_trigger.js"
-    local hardhat_dir="mocks/contracts"
-    local node_modules="$hardhat_dir/node_modules"
+status_report() {
+    python3 - "$1" "$HEALTHY_SERVICES" "$ONE_SHOT_SERVICES" "${2:-}" <<'PY'
+import json, sys
 
-    if [[ ! -f "$deploy_script" ]]; then
-        fail "trigger" "deploy script missing: $deploy_script"
-        return 1
-    fi
+raw, healthy_names, one_shot_names, mode = sys.argv[1], sys.argv[2].split(), sys.argv[3].split(), sys.argv[4]
+try:
+    records = json.loads(raw) if raw.strip().startswith("[") else [json.loads(line) for line in raw.splitlines() if line.strip()]
+except json.JSONDecodeError:
+    records = []
+by_service = {record.get("Service"): record for record in records}
 
-    # Ensure node_modules exist (hardhat-node volume provides them when the
-    # stack is up; otherwise they may not be present in the bare checkout).
-    if [[ ! -d "$node_modules" ]]; then
-        fail "trigger" "node_modules missing; make sure the stack is up first"
-        return 1
-    fi
+ready = True
+lines = []
+for name in healthy_names:
+    record = by_service.get(name)
+    health = (record or {}).get("Health") or "missing"
+    lines.append(f"  {name}: state={(record or {}).get('State', 'missing')} health={health}")
+    if health != "healthy":
+        ready = False
+for name in one_shot_names:
+    record = by_service.get(name)
+    state = (record or {}).get("State")
+    code = (record or {}).get("ExitCode")
+    lines.append(f"  {name}: state={state} exit={code}")
+    if state != "exited" or code != 0:
+        ready = False
 
-    # Run the deploy+trigger script against the live node. The script deploys
-    # contracts (idempotent across restarts because it writes to .env.mock) and
-    # then creates+funds a real task. We use the same WEB3_RPC_URL the compose
-    # services use so the script reaches the node container, not loopback.
-    local exit_code
-    cd "$hardhat_dir"
-    WEB3_RPC_URL=http://127.0.0.1:8545 \
-        npx hardhat run "$deploy_script" --network localhost \
-        > /tmp/trigger_output.log 2>&1
-    exit_code=$?
-    cd - > /dev/null
-
-    if [[ $exit_code -ne 0 ]]; then
-        fail "trigger" "deploy_and_trigger.js exited $exit_code; tail -20 /tmp/trigger_output.log"
-        return 1
-    fi
-
-    # Confirm the script produced the expected output.
-    if grep -q "TaskCreated triggered" /tmp/trigger_output.log && \
-       grep -q "TaskFunded triggered" /tmp/trigger_output.log; then
-        printf 'SERVICE=trigger STATUS=succeeded task_created_and_funded=true\n'
-        return 0
-    fi
-
-    # If the script ran but didn't trigger (TRIGGER_MOCK_TASK not set), that is
-    # fine: the deploy step still ran.
-    if grep -q "Wrote addresses to .env.mock" /tmp/trigger_output.log; then
-        printf 'SERVICE=trigger STATUS=succeeded deploy_ran=true trigger_skipped=true\n'
-        return 0
-    fi
-
-    fail "trigger" "unexpected deploy_and_trigger.js output; tail -20 /tmp/trigger_output.log"
-    return 1
+if mode == "--print":
+    print("\n".join(lines), file=sys.stderr)
+sys.exit(0 if ready else 1)
+PY
 }
 
-# --- main -------------------------------------------------------------------
+# 2. Redis
+check_redis() {
+    local reply
+    reply=$(docker compose exec -T redis redis-cli ping | tr -d '\r')
+    [[ "$reply" == "PONG" ]] || fail "redis" "ping returned '$reply'"
+    ok "redis" "ping=PONG"
+}
+
+# 3. Chain and deployed contracts
+check_chain() {
+    local chain_id
+    chain_id=$(rpc eth_chainId '[]' | json_field '["result"]') || fail "hardhat-node" "eth_chainId failed"
+    [[ -n "$chain_id" ]] || fail "hardhat-node" "empty chain id"
+    ok "hardhat-node" "chain_id=$chain_id"
+
+    [[ -f "$DEPLOYMENTS_FILE" ]] || fail "hardhat-deploy" "missing $DEPLOYMENTS_FILE"
+    local name address code listener_value
+    for name in TASK_MANAGER_ADDRESS ESCROW_ADDRESS; do
+        address=$(json_field "[\"$name\"]" < "$DEPLOYMENTS_FILE")
+        code=$(rpc eth_getCode "[\"$address\",\"latest\"]" | json_field '["result"]')
+        [[ "$code" != "0x" && -n "$code" ]] || fail "hardhat-node" "no contract code at $name=$address"
+        listener_value=$(docker compose exec -T event-listener python -c "from common.config import get_settings; print(get_settings().$(printf %s "$name" | tr '[:upper:]' '[:lower:]'))" | tr -d '\r') || listener_value=""
+        [[ "$(printf %s "$listener_value" | tr "[:upper:]" "[:lower:]")" == "$(printf %s "$address" | tr "[:upper:]" "[:lower:]")" ]] || fail "event-listener" "$name=$listener_value does not match deployed $address"
+        ok "contracts" "$name=$address code=present listener=matches"
+    done
+}
+
+# 4. The seeded model serves inference through the containerised engine
+check_inference() {
+    local response
+    response=$(curl -fsS --max-time 30 -X POST "$INFERENCE_URL/inference" \
+        -H 'content-type: application/json' \
+        -d '{"model_id":"toy_linear","input_data":"aGVsbG8="}') \
+        || fail "inference-engine" "POST /inference for seeded model toy_linear failed"
+    printf '%s' "$response" | grep -q '"output_hash"' || fail "inference-engine" "receipt has no output_hash"
+    ok "inference-engine" "model=toy_linear inference=receipt"
+}
+
+# 5. A new task on the chain is dispatched by the running listener
+check_dispatch() {
+    local output task_id deadline value
+    output=$(mktemp)
+    (cd mocks/contracts && TRIGGER_ONLY=true WEB3_RPC_URL="$RPC_URL" \
+        npx hardhat run scripts/deploy_and_trigger.js --network localhost) >"$output" 2>&1 \
+        || { tail -20 "$output"; rm -f "$output"; fail "trigger" "deploy_and_trigger.js failed"; }
+    task_id=$(grep -oE 'taskId: 0x[0-9a-fA-F]+' "$output" | head -1 | cut -d' ' -f2)
+    rm -f "$output"
+    [[ -n "$task_id" ]] || fail "trigger" "no taskId in trigger output"
+
+    deadline=$(( $(date +%s) + TASK_TIMEOUT ))
+    while true; do
+        value=$(docker compose exec -T redis redis-cli --raw GET "event_listener:task:${task_id#0x}" || true)
+        if grep -q '"dispatched": true' <<<"$value"; then
+            ok "event-listener" "task_id=$task_id dispatched=true"
+            return 0
+        fi
+        if [[ $(date +%s) -ge $deadline ]]; then
+            fail "event-listener" "task_id=$task_id not dispatched after ${TASK_TIMEOUT}s"
+        fi
+        sleep 2
+    done
+}
+
 main() {
     echo "== smoke_test_compose: start =="
+    wait_for_services
+    ok "stack" "all services healthy or completed"
 
-    wait_for_rpc || exit 1
+    check_redis
+    check_chain
 
-    # 1. Health endpoints
-    check "inference-engine" "http://127.0.0.1:8000/health" || exit 1
-    check "verification-api" "http://127.0.0.1:8001/health" || exit 1
+    ok "verification-api" "$(curl -fsS --max-time 10 "$VERIFICATION_URL/health")"
+    ok "inference-engine" "$(curl -fsS --max-time 10 "$INFERENCE_URL/health")"
+    check_inference
 
-    # 2. Real RPC check
-    local chain_id
-    chain_id=$(curl -fsS --max-time 10 -X POST "http://127.0.0.1:8545" \
-        -H 'content-type: application/json' \
-        -d '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}' | \
-        python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["result"])')
-    if [[ -z "$chain_id" ]]; then
-        fail "hardhat-node" "chainId empty"
-        exit 1
+    if [[ "$SKIP_TRIGGER" == "1" ]]; then
+        ok "trigger" "skipped (SMOKE_SKIP_TRIGGER=1)"
+    else
+        check_dispatch
     fi
-    printf 'SERVICE=hardhat-node STATUS=succeeded chain_id=%s\n' "$chain_id"
-
-    # 3. Trigger a real end-to-end task (reuses the Step 2.8 trigger script).
-    trigger_real_task || exit 1
-
     echo "== smoke_test_compose: end =="
 }
 

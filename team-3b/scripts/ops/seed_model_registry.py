@@ -37,7 +37,7 @@ async def seed_models() -> None:
             continue
         cid = await registry.upload_model(model_id, binary, architecture=architecture)
         print(f"{model_id}: uploaded {architecture} model -> {cid}")
-    await redis_client.aclose()
+    await redis_client.close()
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@
 # The EZKL/ONNX toolchain is opt-in: the running proof path is pure Python (see
 # requirements/zkml.txt) and ezkl publishes no linux/arm64 wheel, so enabling it
 # by default would break the build on Apple Silicon.
-FROM accion-base:latest
+FROM base
 
 COPY common ./common
 COPY event_listener ./event_listener

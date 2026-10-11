@@ -5,24 +5,30 @@ that it is healthy, and tear it down. Run every command from the repository root
 
 ## Prerequisites
 
-- Docker Engine 24+ and Compose v2.20+ (`docker compose version`).
+- Docker Engine and Docker Compose v2 (`docker compose version`). The stack was
+  tested with Docker 29.7 and Compose v5.5. The service images use
+  `additional_contexts` to build on the shared base image, so an older Compose may
+  need upgrading.
 - An x86_64 host. Some service images pull platform-specific wheels at build
   time; see [zkML builds](#zkml-builds).
 - At least 4 GB free. The stack runs Redis, a Kubo IPFS node, a Hardhat node,
   and several custom Python images.
 
-No other setup is needed: `docker compose up` builds the images, deploys the mock
-contracts, seeds the model registry, and leaves every service running.
+## Clean start
 
-## Quick start
+From a fresh clone:
 
 ```bash
+cp .env.example .env              # the defaults already target the local mock stack
 docker compose up --build -d
 scripts/ops/smoke_test_compose.sh
 ```
 
-The first `up --build` is the slowest because each image installs its Python
-dependencies. Later runs reuse cached images unless you pass `--build`.
+`up --build` builds the shared base image (`docker/base.Dockerfile`) first, then the
+service images that build on it. It also deploys the mock contracts and seeds the
+model registry, so no step is done by hand. The first build is the slowest because
+it installs the Python dependencies and the Hardhat packages; later runs reuse the
+build cache unless you pass `--build`.
 
 To follow logs:
 
@@ -37,62 +43,75 @@ docker compose logs -f            # everything at once, useful for startup order
 
 ## Verifying the stack
 
-`scripts/ops/smoke_test_compose.sh` checks the `/health` endpoint of each FastAPI
-service and confirms the mock chain answers JSON-RPC. A healthy run prints one
-line per check:
+`scripts/ops/smoke_test_compose.sh` checks the running stack in five steps and
+stops at the first failure:
+
+1. **Services.** Every long-running service reports `healthy`, and the one-shot
+   jobs (`hardhat-deploy`, `seed-model`, `fl-orchestrator`) exited 0. The script
+   waits up to `SMOKE_WAIT_TIMEOUT` seconds (default 180).
+2. **Redis.** `PING` answers `PONG`.
+3. **Chain.** The Hardhat node answers JSON-RPC, the contracts recorded in
+   `mocks/contracts/deployments/localhost.json` have code on chain, and the
+   event-listener's environment holds those same addresses.
+4. **Inference.** The inference engine serves the seeded `toy_linear` model and
+   returns an execution receipt.
+5. **Dispatch.** A new task is created on the deployed contracts, and the running
+   event-listener records it as dispatched within `SMOKE_TASK_TIMEOUT` seconds
+   (default 60). Set `SMOKE_SKIP_TRIGGER=1` to skip this step.
+
+A healthy run ends with `== smoke_test_compose: end ==`. Every check prints one
+line:
 
 ```
-SERVICE=inference-engine STATUS=succeeded endpoint=http://127.0.0.1:8000/health status=200
-SERVICE=verification-api STATUS=succeeded endpoint=http://127.0.0.1:8001/health status=200
-SERVICE=hardhat-node STATUS=succeeded chain_id=31337
+SERVICE=redis STATUS=succeeded ping=PONG
+SERVICE=contracts STATUS=succeeded TASK_MANAGER_ADDRESS=0x... code=present listener=matches
+SERVICE=inference-engine STATUS=succeeded model=toy_linear inference=receipt
+SERVICE=event-listener STATUS=succeeded task_id=0x... dispatched=true
 ```
 
-Any `STATUS=failed` line means the stack is not ready yet. The script waits up to
-40 seconds for the RPC. On a slow first boot, raise the wait:
-
-```bash
-ROCKSDB_WAIT_TIMEOUT=90 scripts/ops/smoke_test_compose.sh
-```
+Any `STATUS=failed` line names the service and the reason. The most common causes
+are listed under [Troubleshooting](#troubleshooting).
 
 The worker processes (event-listener, proof-submitter) expose no ports. They
-declare compose healthchecks, so dependents wait on real readiness.
+declare healthchecks, so their dependents wait on real readiness.
 
 ## Ports
 
-| Service          | Host port | Notes                                  |
-| ---------------- | --------- | -------------------------------------- |
-| Redis            | 6379      | Persisted in the `redis_data` volume   |
-| IPFS (Kubo)      | 5001      | API; gateway on 8080                   |
-| Hardhat node     | 8545      | JSON-RPC, chainId 31337                |
-| Inference engine | 8000      | `POST /inference`, `GET /health`       |
-| Verification API | 8001      | `POST /verify`, `GET /health`          |
+| Service          | Host port | Notes                                |
+| ---------------- | --------- | ------------------------------------ |
+| Redis            | 6379      | Persisted in the `redis_data` volume |
+| IPFS (Kubo)      | 5001      | API; gateway on host port `IPFS_GATEWAY_PORT` (default 8080) |
+| Hardhat node     | 8545      | JSON-RPC, chainId 31337              |
+| Inference engine | 8000      | `POST /inference`, `GET /health`     |
+| Verification API | 8001      | `POST /verify`, `GET /health`        |
 
 ## Configuration
-
-```bash
-cp .env.example .env
-```
 
 `common/config.py` is the only place that reads environment variables. Each
 service calls `get_settings().require(...)` with exactly the variables it needs,
 so a federated-learning worker never sees blockchain settings and the inference
-engine never sees proof-submission keys. `.env.example` documents every variable
-and marks the ones that point at the mock chain. The compose stack works without
-editing `.env`.
+engine never sees proof-submission keys.
+
+`.env.example` documents every variable. Each one is tagged `MOCK`, `LOCAL`, `REAL`,
+or `NOT-READ-YET`, so you can see at a glance which values stand in for another
+team's deployment. The compose file overrides some values inside containers (for
+example `WEB3_RPC_URL` points at the `hardhat-node` service), so the stack works
+without editing `.env`.
 
 ## Mock chain
 
-The `hardhat-deploy` service runs once per boot. It deploys the stub contracts
-from `mocks/contracts/contracts/` and publishes their addresses in two places, so
-services that start before the deploy finishes can still find them:
+The `hardhat-deploy` service runs once per boot. It compiles and deploys the stub
+contracts from `mocks/contracts/contracts/`, then publishes their addresses in two
+places, so services that start before the deploy finishes can still find them:
 
 1. `.env.mock` at the repo root, read by the listener and submitter through their
    `env_file` entry.
 2. `mocks/contracts/deployments/localhost.json`, read by `Settings` when
    `MOCK_DEPLOYMENTS_PATH` is set (compose sets it).
 
-Resetting the chain changes the addresses. `docker compose down -v` followed by
-`up` re-runs the deploy and rewrites both files.
+The deploy also creates one task, so the first boot already produces a dispatched
+task. Resetting the chain (`docker compose down -v`) changes the addresses; the
+next `up` rewrites both files.
 
 ## Development overrides
 
@@ -113,11 +132,12 @@ Resetting the chain changes the addresses. `docker compose down -v` followed by
 
   The same applies to `proof-submitter`. Because the base image is shared, only
   the changed service rebuilds.
-- **Debug profile.** `seed-model` is also gated behind the `debug-only` profile,
-  so you can re-seed the registry on demand (for example after wiping Redis):
+- **Seeding.** `seed-model` runs when its container is created, which means the
+  first `up` and the `up` after `down`, in both modes. To re-seed on demand (for
+  example after wiping Redis), run it as a one-off:
 
   ```bash
-  docker compose --profile debug-only up -d seed-model
+  docker compose run --rm seed-model
   ```
 
 To prove the exact artifact a reviewer would build, run without the override.
@@ -131,15 +151,19 @@ scripts/ops/smoke_test_compose.sh
 mv docker-compose.override.yml.bak docker-compose.override.yml
 ```
 
-The smoke test checks health and RPC reachability in both modes. It does not
-check whether `--reload` is active.
+The smoke test checks health and behaviour. It does not check whether `--reload`
+is active.
 
 ## Stopping and resetting
 
 ```bash
-docker compose down        # stop; workers finish in-flight work
+docker compose down        # stop; the workers get 30 s to finish in-flight work
 docker compose down -v     # also wipe Redis and IPFS volumes (clean registry and block state)
 ```
+
+On SIGTERM the event-listener finishes its current poll pass and persists its block
+progress, so it resumes from the last block on the next start. The proof-submitter
+flushes its pending batch before it exits.
 
 Clean rebuild, when images and volumes both need to go:
 
@@ -155,28 +179,56 @@ To force a fresh Hardhat compile and deploy, remove the git-ignored build output
 The next `up` regenerates it:
 
 ```bash
-rm -rf mocks/contracts/artifacts mocks/contracts/deployments .env.mock
+rm -rf mocks/contracts/artifacts mocks/contracts/cache mocks/contracts/deployments .env.mock
 docker compose down -v
 docker compose up --build -d
 ```
 
+## Limits of the containerised stack
+
+The compose stack runs each component as its own service, but it does not yet run
+the whole path in one container:
+
+- **Inference, proof and settlement are not chained.** The event-listener dispatches
+  tasks, and the inference engine and proof-submitter run as separate services. The
+  composed inference → proof → settlement path runs in-process through
+  `python -m inference.pipeline`, which is not a compose service yet.
+- **fl-orchestrator is a one-shot job.** It trains the configured rounds, stores the
+  model, and exits 0. The long-running Flower entrypoint is
+  `federated_learning/network_runner.py`, and it is not part of this stack.
+- **The TEE is simulated and the proof backend is the development commitment.** See
+  `docs/TEE_NOTES.md` and `docs/ZKML_SPIKE.md`.
+
 ## Troubleshooting
 
-**A host port is already in use** (8545, 6379, 8000, 8001). Stop the other process,
-or change the host port in `docker-compose.yml` and in the smoke-test URL.
+**`.env` is missing or stale.** Services read `.env` if it exists, but the defaults
+in `.env.example` are what the stack was tested with. Start from a fresh copy with
+`cp .env.example .env`. Blockchain and storage variables in an old `.env` can
+point services at the wrong endpoints.
 
-**First boot is slow, or the smoke test reports `network_unreachable`.** On the
-first `up`, `hardhat-node` runs `npm install` inside the mounted tree before
-Hardhat starts. Wait, or retry with `ROCKSDB_WAIT_TIMEOUT` raised.
+**Stale volumes from a previous run.** Redis and IPFS keep state across `down`. If
+you see old tasks, models, or provenance, or the listener resumes from an old block
+after you redeployed the chain, reset with `docker compose down -v` and then `up`.
 
-**`event-listener` or `proof-submitter` stays unhealthy.** Both healthchecks
-depend on Redis and the chain. Run `docker compose ps` and confirm the
-dependencies report `healthy`.
+**A host port is already in use** (8545, 6379, 5001, 8000, 8001, or the IPFS
+gateway). Stop the other process. For the IPFS gateway, set `IPFS_GATEWAY_PORT` in
+`.env` or the shell instead. The other ports are fixed in `docker-compose.yml`.
 
-**The listener is healthy but nothing is dispatched.** Check that the deploy ran:
+**First boot is slow, or services stay `starting`.** On the first `up`,
+`hardhat-node` runs `npm install` before Hardhat starts. Wait, or raise the wait:
+
+```bash
+SMOKE_WAIT_TIMEOUT=600 scripts/ops/smoke_test_compose.sh
+```
+
+**A service is unhealthy.** Run `docker compose ps` and confirm its dependencies
+report `healthy`. The event-listener and proof-submitter healthchecks depend on
+Redis and, for the proof-submitter, the chain.
+
+**The smoke test says `dispatched` never appeared.** Check that the deploy ran:
 `mocks/contracts/deployments/localhost.json` should hold non-empty addresses, and
-`docker compose logs hardhat-deploy` should show `Deploying mock contracts` and
-`Wrote addresses`.
+`docker compose logs hardhat-deploy` should show `Deploying mock contracts`. Then
+check the listener log for the task id the smoke test printed.
 
 **`PROOF_SUBMISSION_FAILED_PERMANENTLY` in proof-submitter logs.** The submitter
 retries three times, then dead-letters the batch to the Redis list

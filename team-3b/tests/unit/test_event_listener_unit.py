@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import fakeredis.aioredis as fakeredis
@@ -38,6 +39,25 @@ async def test_task_state_survives_listener_restart() -> None:
     await second._restore_task_states()
 
     assert second._task_events["task"]["funded"]["funded_amount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stop_returns_from_start_after_the_current_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    listener = make_listener()
+    passes: list[int] = []
+
+    async def record_pass(from_block: int) -> None:
+        passes.append(from_block)
+
+    async def stop_during_first_sleep(delay: float) -> None:
+        listener.stop()
+
+    monkeypatch.setattr(listener, "_process_events", record_pass)
+    listener.sleep = stop_during_first_sleep
+
+    await asyncio.wait_for(listener.start(poll_interval=0.01), timeout=1.0)
+
+    assert len(passes) == 1
 
 
 @pytest.mark.asyncio

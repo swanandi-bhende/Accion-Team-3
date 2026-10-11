@@ -6,7 +6,7 @@
 # It reads the compiled contract ABIs from mocks/contracts/artifacts/ at
 # startup; docker-compose.yml mounts that directory read-only because the
 # artifacts are git-ignored build output produced by the deploy step.
-FROM accion-base:latest
+FROM base
 
 COPY common ./common
 COPY event_listener ./event_listener

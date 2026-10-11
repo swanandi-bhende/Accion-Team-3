@@ -43,6 +43,11 @@ class EventListener:
         self._pending_since: dict[str, float] = {}
         self._connection_state = "disconnected"
         self._state_restored = False
+        self._stop_requested = False
+
+    def stop(self) -> None:
+        """Ask the poll loop to finish its current pass and return from ``start``."""
+        self._stop_requested = True
 
     @staticmethod
     def _task_id(value: Any) -> str:
@@ -224,7 +229,7 @@ class EventListener:
     async def start(self, poll_interval: float = 1.0) -> None:
         await self._restore_task_states()
         self._connection_state = "connected"
-        while True:
+        while not self._stop_requested:
             try:
                 from_block = await self._get_last_processed_block() + 1
                 await self._process_events(from_block)

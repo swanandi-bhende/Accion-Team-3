@@ -4,10 +4,9 @@
 #
 # One place installs the common runtime dependencies and the tooling the compose
 # healthchecks need, so the five service images cannot silently drift apart.
-# docker-compose.yml builds this image as the `base` service before the services
-# that build FROM it; building it by hand is equivalent:
-#
-#   docker build -f docker/base.Dockerfile -t accion-base:latest .
+# docker-compose.yml builds this image as the `base` service and each service
+# links to it with `additional_contexts`, so `docker compose up --build` builds it
+# first with no manual step.
 #
 # Service-specific extras stay in the service Dockerfiles: flwr only in
 # federated_learning/Dockerfile, the EZKL toolchain only in proof_submitter's.

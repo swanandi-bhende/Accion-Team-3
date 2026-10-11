@@ -6,7 +6,7 @@
 # The runner trains the configured job and exits (a one-shot service in
 # docker-compose.yml); federated_learning.network_runner is the long-lived
 # gRPC/SuperLink entrypoint used for real multi-process runs.
-FROM accion-base:latest
+FROM base
 
 # Installing into the shared virtualenv needs root; the base image drops to the
 # unprivileged user again afterwards.

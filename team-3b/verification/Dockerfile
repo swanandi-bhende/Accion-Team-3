@@ -3,7 +3,7 @@
 # Verification API (FastAPI). Serves POST /verify for TEE attestations and zkML
 # proofs, and resolves payloads through the model storage backend, so it ships
 # the verifier implementations from proof_generator as well.
-FROM accion-base:latest
+FROM base
 
 COPY common ./common
 COPY proof_generator ./proof_generator
