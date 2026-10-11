@@ -13,7 +13,7 @@ class EnclaveSim(Enclave):
     Simulated Enclave for local development.
     Does NOT provide real hardware guarantees.
     """
-    def __init__(self):
+    def __init__(self) -> None:
         # Generate a self-signed key for the simulator
         self._private_key = ed25519.Ed25519PrivateKey.generate()
         public_bytes = self._private_key.public_key().public_bytes(
@@ -45,7 +45,8 @@ class EnclaveSim(Enclave):
         nonce = encrypted_data[:12]
         ciphertext = encrypted_data[12:]
         aesgcm = AESGCM(sealed_key)
-        return aesgcm.decrypt(nonce, ciphertext, None)
+        plaintext: bytes = aesgcm.decrypt(nonce, ciphertext, None)
+        return plaintext
 
     async def run_isolated(self, model: bytes, input_data: bytes) -> bytes:
         # Simulate isolated OS subprocess by actually using asyncio subprocess

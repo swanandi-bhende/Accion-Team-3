@@ -12,14 +12,23 @@ import hashlib
 import json
 import os
 import time
+from collections.abc import Iterable
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import fakeredis.aioredis as fakeredis
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from common.interfaces import StorageBackend
 from common.model_registry import ModelRegistry
-from common.models import AttestationReport, ExecutionReceipt, ProofArtifact
+from common.models import (
+    AttestationReport,
+    ExecutionReceipt,
+    InferenceRequest,
+    ProofArtifact,
+)
 from inference.engine import InferenceEngine
 from inference.pipeline import (
     OUTCOME_DROPPED_INTEGRITY_FAILURE,
@@ -30,7 +39,7 @@ from inference.pipeline import (
 )
 from inference.tee_runtime import TEERuntime
 from proof_generator.zkml_prover import ZkMLProver
-from proof_submitter.submitter import ProofSubmitter
+from proof_submitter.submitter import PendingProof, ProofSubmitter
 
 SEALED_KEY = b"mock_sealed_key_0123456789abcdef"
 MODEL_BINARY = b"MOCK_MLP_WEIGHTS_67890"
@@ -38,7 +47,7 @@ SLOW_MODEL = "dd" * 32
 FAST_MODEL = "ee" * 32
 
 
-def _task(task_id: str, model_id: str) -> dict:
+def _task(task_id: str, model_id: str) -> dict[str, Any]:
     """Exactly the payload shape EventListener dispatches (see listener._try_dispatch)."""
     return {
         "created": {"task_id": task_id, "description_hash": bytes.fromhex(model_id)},
@@ -50,13 +59,13 @@ def _task(task_id: str, model_id: str) -> dict:
 class DelayedEngine:
     """InferenceEngine double that records its own peak concurrency."""
 
-    def __init__(self, delay: float = 0.02):
+    def __init__(self, delay: float = 0.02) -> None:
         self.delay = delay
         self.active = 0
         self.peak = 0
         self.calls = 0
 
-    async def execute(self, request):
+    async def execute(self, request: InferenceRequest) -> ExecutionReceipt:
         self.calls += 1
         self.active += 1
         self.peak = max(self.peak, self.active)
@@ -77,7 +86,7 @@ class DelayedEngine:
 
 
 class FakeTee:
-    def generate_attestation(self, input_data, output):
+    def generate_attestation(self, input_data: bytes, output: bytes) -> AttestationReport:
         return AttestationReport(
             enclave_measurement="fake-measurement",
             signer_identity="fake-signer",
@@ -91,10 +100,10 @@ class FakeTee:
 class FakeProver:
     """ZkMLProver double that times out for the models named in ``timeout_for``."""
 
-    def __init__(self, timeout_for=()):
+    def __init__(self, timeout_for: Iterable[str] = ()) -> None:
         self.timeout_for = set(timeout_for)
 
-    async def generate_proof(self, receipt):
+    async def generate_proof(self, receipt: ExecutionReceipt) -> ProofArtifact:
         if receipt.model_id in self.timeout_for:
             raise TimeoutError("proof generation exceeded its timeout")
         return ProofArtifact(
@@ -112,9 +121,9 @@ class FakeProver:
 class RecordingSubmitter:
     """ProofSubmitter double that settles immediately, or always dead-letters."""
 
-    def __init__(self, settle: bool = True):
+    def __init__(self, settle: bool = True) -> None:
         self.settle = settle
-        self.submissions = []
+        self.submissions: list[tuple[str, AttestationReport, ProofArtifact, str]] = []
         self.metrics = {
             "batches_submitted": 0,
             "proofs_submitted": 0,
@@ -124,15 +133,21 @@ class RecordingSubmitter:
         }
         self._buffered: list[str] = []
 
-    async def submit_proof(self, task_id, attestation, zkml_proof, model_cid):
+    async def submit_proof(
+        self,
+        task_id: str,
+        attestation: AttestationReport,
+        zkml_proof: ProofArtifact,
+        model_cid: str,
+    ) -> SimpleNamespace:
         self.submissions.append((task_id, attestation, zkml_proof, model_cid))
         self._buffered.append(task_id)
         return SimpleNamespace(task_id=task_id, proof_hash="a" * 64)
 
-    def buffered_task_ids(self):
+    def buffered_task_ids(self) -> list[str]:
         return list(self._buffered)
 
-    async def flush(self):
+    async def flush(self) -> str | None:
         if not self._buffered:
             return None
         self._buffered.clear()
@@ -144,7 +159,14 @@ class RecordingSubmitter:
         return "0x" + "de" * 32
 
 
-def _fake_pipeline(engine, prover=None, submitter=None, *, max_in_flight=4, queue_maxsize=None):
+def _fake_pipeline(
+    engine: DelayedEngine | InferenceEngine,
+    prover: FakeProver | ZkMLProver | None = None,
+    submitter: RecordingSubmitter | None = None,
+    *,
+    max_in_flight: int = 4,
+    queue_maxsize: int | None = None,
+) -> Pipeline:
     return Pipeline(
         SimpleNamespace(),  # the listener is only the dispatch sink here
         engine,
@@ -161,7 +183,7 @@ def _fake_pipeline(engine, prover=None, submitter=None, *, max_in_flight=4, queu
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
-async def test_inference_concurrency_is_capped_and_reported():
+async def test_inference_concurrency_is_capped_and_reported() -> None:
     """Nine tasks through three workers: the TEE never sees more than three at once.
 
     The worker pool runs here rather than ``drain()``, so the admission path is
@@ -188,7 +210,7 @@ async def test_inference_concurrency_is_capped_and_reported():
 
 
 @pytest.mark.asyncio
-async def test_full_queue_applies_backpressure_and_logs_being_throttled():
+async def test_full_queue_applies_backpressure_and_logs_being_throttled() -> None:
     pipeline = _fake_pipeline(DelayedEngine(delay=0.01), max_in_flight=2, queue_maxsize=2)
     pipeline._queue.put_nowait(_task("t0", FAST_MODEL))
     pipeline._queue.put_nowait(_task("t1", FAST_MODEL))
@@ -215,7 +237,7 @@ async def test_full_queue_applies_backpressure_and_logs_being_throttled():
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
-async def test_tee_integrity_failure_drops_that_task_only(memory_storage):
+async def test_tee_integrity_failure_drops_that_task_only(memory_storage: StorageBackend) -> None:
     """A model whose plaintext cannot match its committed hash is dropped, not retried.
 
     ``InferenceEngine`` reaches the real ``TEERuntime`` here: the blob is a
@@ -223,7 +245,7 @@ async def test_tee_integrity_failure_drops_that_task_only(memory_storage):
     the enclave's integrity check is the thing that fails. The next task still
     completes.
     """
-    redis_client = fakeredis.FakeRedis(decode_responses=False)
+    redis_client: Any = fakeredis.FakeRedis(decode_responses=False)
     registry = ModelRegistry(redis_client, memory_storage)
 
     nonce = os.urandom(12)
@@ -269,7 +291,7 @@ async def test_tee_integrity_failure_drops_that_task_only(memory_storage):
 
 
 @pytest.mark.asyncio
-async def test_proof_timeout_drops_one_task_without_blocking_the_next():
+async def test_proof_timeout_drops_one_task_without_blocking_the_next() -> None:
     submitter = RecordingSubmitter()
     pipeline = _fake_pipeline(
         DelayedEngine(delay=0.0),
@@ -297,13 +319,15 @@ async def test_proof_timeout_drops_one_task_without_blocking_the_next():
 
 
 @pytest.mark.asyncio
-async def test_unauthenticated_model_blob_is_dropped_as_an_integrity_failure(memory_storage):
+async def test_unauthenticated_model_blob_is_dropped_as_an_integrity_failure(
+    memory_storage: StorageBackend,
+) -> None:
     """Storage handing back bytes that are not the committed sealed artifact.
 
     The blob decrypts to nothing meaningful, so this must land in the integrity
     bucket instead of the catch-all "unexpected error" bucket.
     """
-    redis_client = fakeredis.FakeRedis(decode_responses=False)
+    redis_client: Any = fakeredis.FakeRedis(decode_responses=False)
     registry = ModelRegistry(redis_client, memory_storage)
     tampered_model_id = "cc" * 32
     cid = await memory_storage.upload(b"not-a-sealed-model-blob")
@@ -333,7 +357,9 @@ async def test_unauthenticated_model_blob_is_dropped_as_an_integrity_failure(mem
 
 
 @pytest.mark.asyncio
-async def test_real_prover_timeout_maps_to_a_dropped_task(memory_storage, tmp_path):
+async def test_real_prover_timeout_maps_to_a_dropped_task(
+    memory_storage: StorageBackend, tmp_path: Path
+) -> None:
     """The real ZkMLProver's own timeout, not a fake raising TimeoutError."""
     redis_client = fakeredis.FakeRedis(decode_responses=False)
     registry = ModelRegistry(redis_client, memory_storage)
@@ -349,10 +375,12 @@ async def test_real_prover_timeout_maps_to_a_dropped_task(memory_storage, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_exhausted_submission_retries_land_in_dlq_and_the_pipeline_continues(mock_chain):
+async def test_exhausted_submission_retries_land_in_dlq_and_the_pipeline_continues(
+    mock_chain: tuple[Any, Any, Any],
+) -> None:
     """The first batch reverts until it is dead-lettered; the next task still settles."""
     web3, task_manager, _escrow = mock_chain
-    redis_client = fakeredis.FakeRedis(decode_responses=False)
+    redis_client: Any = fakeredis.FakeRedis(decode_responses=False)
     submitter = ProofSubmitter(web3, task_manager, redis_client, batch_window=10.0)
     # Retries must be instant here; the batch window stays realistic so the
     # background flush timer cannot race the explicit flush.
@@ -361,13 +389,13 @@ async def test_exhausted_submission_retries_land_in_dlq_and_the_pipeline_continu
     real_send_transaction = submitter._send_transaction
     attempts = {"count": 0}
 
-    async def fail_every_attempt_of_the_first_batch(proofs):
+    async def fail_every_attempt_of_the_first_batch(proofs: list[PendingProof]) -> str:
         attempts["count"] += 1
         if attempts["count"] <= submitter.MAX_RETRIES:
             raise RuntimeError("execution reverted")
         return await real_send_transaction(proofs)
 
-    submitter._send_transaction = fail_every_attempt_of_the_first_batch
+    submitter._send_transaction = fail_every_attempt_of_the_first_batch  # type: ignore[method-assign]
     pipeline = Pipeline(
         SimpleNamespace(),
         DelayedEngine(delay=0.0),

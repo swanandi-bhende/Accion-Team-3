@@ -46,7 +46,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          pip install -r requirements/base.txt -r requirements/fl.txt -r requirements/dev.txt
 
       - name: Lint (ruff)
         run: ruff check .
@@ -93,7 +93,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          pip install -r requirements/base.txt -r requirements/fl.txt -r requirements/dev.txt
 
       - name: Run federated learning tests (reporting, in-process, and real network)
         run: pytest tests/property/test_fl_orchestrator.py tests/integration/test_fl_orchestrator_integration.py tests/integration/test_fl_checkpoint.py tests/integration/test_fl_runner.py tests/integration/test_fl_network_apps.py tests/integration/test_fl_real_network.py --tb=short -v

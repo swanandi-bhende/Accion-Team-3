@@ -1,5 +1,7 @@
 import base64
 import os
+from collections.abc import AsyncIterator
+from typing import Any
 
 import fakeredis.aioredis as fakeredis
 import pytest
@@ -20,11 +22,12 @@ os.environ["ZKML_PROVING_KEY_STORE"] = "./data/proving_keys"
 os.environ["ZKML_SUPPORTED_ARCHITECTURES"] = "linear"
 from common.model_registry import ModelRegistry
 from inference.app import app
+from inference.engine import InferenceEngine
 from tests.property.test_model_registry_prop import MockStorageBackend
 
 
 @pytest_asyncio.fixture
-async def override_deps():
+async def override_deps() -> AsyncIterator[InferenceEngine]:
     redis_client = fakeredis.FakeRedis(decode_responses=False)
     storage = MockStorageBackend()
     registry = ModelRegistry(redis_client, storage)
@@ -57,14 +60,14 @@ async def override_deps():
     yield engine
 
 @pytest.mark.asyncio
-async def test_health_check(override_deps):
+async def test_health_check(override_deps: InferenceEngine) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
 @pytest.mark.asyncio
-async def test_post_inference_success(override_deps):
+async def test_post_inference_success(override_deps: InferenceEngine) -> None:
     payload = {
         "model_id": "api_seeded_model",
         "input_data": base64.b64encode(b"test_input").decode("utf-8")
@@ -78,7 +81,7 @@ async def test_post_inference_success(override_deps):
     assert data["model_id"] == "api_seeded_model"
 
 @pytest.mark.asyncio
-async def test_post_inference_404_not_found(override_deps):
+async def test_post_inference_404_not_found(override_deps: InferenceEngine) -> None:
     payload = {
         "model_id": "nonexistent_model",
         "input_data": base64.b64encode(b"test_input").decode("utf-8")
@@ -90,15 +93,16 @@ async def test_post_inference_404_not_found(override_deps):
     assert response.json()["error"] == "ModelNotFound"
 
 @pytest.mark.asyncio
-async def test_post_inference_408_timeout(override_deps):
+async def test_post_inference_408_timeout(override_deps: InferenceEngine) -> None:
     engine = override_deps
     # Hack the TEE to sleep longer than the engine timeout (2.0s)
     import asyncio
-    async def slow_isolated(*args, **kwargs):
+    async def slow_isolated(*args: Any, **kwargs: Any) -> bytes:
         await asyncio.sleep(2.5)
         return b"slow"
 
-    engine.tee.enclave.run_isolated = slow_isolated
+    assert engine.tee.enclave is not None
+    engine.tee.enclave.run_isolated = slow_isolated  # type: ignore[method-assign]
 
     payload = {
         "model_id": "api_seeded_model",

@@ -4,6 +4,7 @@ import fakeredis.aioredis as fakeredis
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from redis.asyncio import Redis
 
 from common.exceptions import IntegrityCheckFailedError
 from common.interfaces import StorageBackend
@@ -11,8 +12,8 @@ from common.model_registry import ModelRegistry
 
 
 class MockStorageBackend(StorageBackend):
-    def __init__(self):
-        self.store = {}
+    def __init__(self) -> None:
+        self.store: dict[str, bytes] = {}
 
     async def upload(self, data: bytes) -> str:
         cid = f"Qm{hashlib.sha256(data).hexdigest()[:20]}"
@@ -25,21 +26,21 @@ class MockStorageBackend(StorageBackend):
         return self.store[cid]
 
 @pytest.fixture
-def redis_client():
+def redis_client() -> Redis:
     return fakeredis.FakeRedis(decode_responses=False)
 
 @pytest.fixture
-def storage():
+def storage() -> MockStorageBackend:
     return MockStorageBackend()
 
 @pytest.fixture
-def registry(redis_client, storage):
+def registry(redis_client: Redis, storage: MockStorageBackend) -> ModelRegistry:
     return ModelRegistry(redis_client, storage)
 
 @settings(max_examples=25)
 @given(model_id=st.text(min_size=1, max_size=20), model_binary=st.binary(min_size=1, max_size=100))
 @pytest.mark.asyncio
-async def test_property_19_model_registry_round_trip(model_id, model_binary):
+async def test_property_19_model_registry_round_trip(model_id: str, model_binary: bytes) -> None:
     """Property 19: Registering and querying returns exact CID."""
     redis_client = fakeredis.FakeRedis(decode_responses=False)
     storage = MockStorageBackend()
@@ -64,7 +65,7 @@ async def test_property_19_model_registry_round_trip(model_id, model_binary):
 @settings(max_examples=25)
 @given(model_id=st.text(min_size=1, max_size=20), model_binary=st.binary(min_size=1, max_size=100))
 @pytest.mark.asyncio
-async def test_property_20_cid_validation_before_reference(model_id, model_binary):
+async def test_property_20_cid_validation_before_reference(model_id: str, model_binary: bytes) -> None:
     """Property 20: A CID must resolve to exactly the expected model bytes."""
     redis_client = fakeredis.FakeRedis(decode_responses=False)
     storage = MockStorageBackend()
@@ -85,7 +86,7 @@ async def test_property_20_cid_validation_before_reference(model_id, model_binar
 
 
 
-def test_property_15_exponential_backoff_bounds():
+def test_property_15_exponential_backoff_bounds() -> None:
     """Property 15: Exponential backoff delay bounds."""
     base = ModelRegistry.UPLOAD_BACKOFF_BASE
     max_delay = ModelRegistry.UPLOAD_BACKOFF_MAX

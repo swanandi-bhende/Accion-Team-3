@@ -158,7 +158,7 @@ class ProofSubmitter:
             self.clock() - min(proof.submitted_at for proof in proofs),
             len(proofs),
         )
-        return tx_hash.hex() if hasattr(tx_hash, "hex") else str(tx_hash)
+        return str(tx_hash.hex()) if hasattr(tx_hash, "hex") else str(tx_hash)
 
     @staticmethod
     def _bytes32(value: str) -> bytes:

@@ -46,7 +46,7 @@ class EventListener:
 
     @staticmethod
     def _task_id(value: Any) -> str:
-        return value.hex() if hasattr(value, "hex") else str(value)
+        return str(value.hex()) if hasattr(value, "hex") else str(value)
 
     @staticmethod
     def _event_args(event: Any) -> dict[str, Any]:
@@ -228,7 +228,13 @@ class EventListener:
             try:
                 from_block = await self._get_last_processed_block() + 1
                 await self._process_events(from_block)
+            except (ConnectionError, OSError):
+                pass
+            try:
                 await self.sleep(poll_interval)
+            except asyncio.CancelledError:
+                logger.warning("event-listener: poll cancelled (shutdown in progress)")
+                break
             except (ConnectionError, OSError):
                 self._connection_state = "disconnected"
                 connect = getattr(self.web3.provider, "connect", None)

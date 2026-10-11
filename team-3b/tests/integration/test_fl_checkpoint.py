@@ -23,6 +23,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 import fakeredis.aioredis as fakeredis
 import pytest
@@ -38,13 +39,13 @@ from inference.tee_runtime import TEERuntime
 
 ROOT = Path(__file__).resolve().parents[2]
 PYTHON = sys.executable
-HARNESS = ROOT / "scripts" / "fl_crash_harness.py"
+HARNESS = ROOT / "scripts" / "fl" / "fl_crash_harness.py"
 REDIS_URL = os.environ.get("FL_REDIS_URL", "redis://localhost:6379")
 SEALED_KEY = b"mock_sealed_key_0123456789abcdef"
 
 
 class InMemoryStorage(StorageBackend):
-    def __init__(self):
+    def __init__(self) -> None:
         self.store: dict[str, bytes] = {}
 
     async def upload(self, data: bytes) -> str:
@@ -57,7 +58,7 @@ class InMemoryStorage(StorageBackend):
 
 
 @pytest.mark.asyncio
-async def test_property_11_trained_model_runs_through_the_tee_runtime():
+async def test_property_11_trained_model_runs_through_the_tee_runtime() -> None:
     """Step 15.5: train -> store -> resolve -> execute on the FL-produced model."""
     registry = ModelRegistry(fakeredis.FakeRedis(decode_responses=False), InMemoryStorage())
     orchestrator = FederatedLearningOrchestrator(
@@ -109,7 +110,7 @@ async def test_property_11_trained_model_runs_through_the_tee_runtime():
         tee.shutdown()
 
 
-def _redis_or_skip():
+def _redis_or_skip() -> Any:
     try:
         import redis as sync_redis
     except ImportError:  # pragma: no cover - redis is a runtime dependency
@@ -122,7 +123,7 @@ def _redis_or_skip():
     return client
 
 
-def test_provenance_survives_a_real_mid_run_process_kill():
+def test_provenance_survives_a_real_mid_run_process_kill() -> None:
     """Step 15.7: rounds that completed before a crash stay durably in Redis."""
     client = _redis_or_skip()
     task_id = f"crash-{uuid.uuid4().hex[:8]}"

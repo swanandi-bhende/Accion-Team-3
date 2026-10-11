@@ -12,14 +12,14 @@ from proof_generator import ZkMLProver
 from tests.property.test_model_registry_prop import MockStorageBackend
 
 
-def setup_prover():
+def setup_prover() -> tuple[ModelRegistry, MockStorageBackend]:
     redis_client = fakeredis.FakeRedis(decode_responses=False)
     storage = MockStorageBackend()
     return ModelRegistry(redis_client, storage), storage
 
 
 @pytest.mark.asyncio
-async def test_circuit_cache_is_shared_by_architecture():
+async def test_circuit_cache_is_shared_by_architecture() -> None:
     registry, _ = setup_prover()
     prover = ZkMLProver(registry)
 
@@ -30,17 +30,17 @@ async def test_circuit_cache_is_shared_by_architecture():
 
 
 @pytest.mark.asyncio
-async def test_proof_generation_timeout_boundary():
+async def test_proof_generation_timeout_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
     registry, storage = setup_prover()
     model = b"timeout-proof-model"
     cid = await storage.upload(model)
     await registry.register("timeout-proof", cid, model, architecture="linear")
     prover = ZkMLProver(registry, timeout_s=0.01)
 
-    async def slow_compile(*args):
+    async def slow_compile(*args: object) -> None:
         await asyncio.sleep(1)
 
-    prover._compile_circuit = AsyncMock(side_effect=slow_compile)
+    monkeypatch.setattr(prover, "_compile_circuit", AsyncMock(side_effect=slow_compile))
     receipt = ExecutionReceipt(
         execution_id="id",
         model_id="timeout-proof",
@@ -55,9 +55,9 @@ async def test_proof_generation_timeout_boundary():
         await prover.generate_proof(receipt)
 
 
-def test_malformed_receipt_is_rejected():
+def test_malformed_receipt_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        ExecutionReceipt(
+        ExecutionReceipt(  # type: ignore[call-arg]
             execution_id="id",
             model_id="model",
             model_cid="cid",
@@ -68,7 +68,7 @@ def test_malformed_receipt_is_rejected():
 
 
 @pytest.mark.asyncio
-async def test_unknown_model_fails_architecture_detection():
+async def test_unknown_model_fails_architecture_detection() -> None:
     registry, _ = setup_prover()
     prover = ZkMLProver(registry)
 

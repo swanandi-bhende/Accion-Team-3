@@ -9,7 +9,7 @@ from common.model_registry import ModelRegistry
 
 
 class FailingStorageBackend(StorageBackend):
-    def __init__(self, fail_count):
+    def __init__(self, fail_count: int) -> None:
         self.fail_count = fail_count
         self.attempts = 0
 
@@ -23,11 +23,11 @@ class FailingStorageBackend(StorageBackend):
         return b"mock_data"
 
 @pytest.fixture
-def redis_client():
+def redis_client() -> fakeredis.FakeRedis:
     return fakeredis.FakeRedis(decode_responses=False)
 
 @pytest.mark.asyncio
-async def test_get_unknown_model_returns_none(redis_client):
+async def test_get_unknown_model_returns_none(redis_client: fakeredis.FakeRedis) -> None:
     storage = FailingStorageBackend(0)
     registry = ModelRegistry(redis_client, storage)
 
@@ -35,7 +35,7 @@ async def test_get_unknown_model_returns_none(redis_client):
     assert result is None
 
 @pytest.mark.asyncio
-async def test_register_multiple_versions(redis_client):
+async def test_register_multiple_versions(redis_client: fakeredis.FakeRedis) -> None:
     from tests.property.test_model_registry_prop import MockStorageBackend
     storage = MockStorageBackend()
     registry = ModelRegistry(redis_client, storage)
@@ -51,15 +51,17 @@ async def test_register_multiple_versions(redis_client):
     await registry.register(model_id, cid2, bin2)
 
     latest = await registry.get(model_id)
+    assert latest is not None
     assert latest.version == 2
     assert latest.cid == cid2
 
     v1 = await registry.get(model_id, version=1)
+    assert v1 is not None
     assert v1.version == 1
     assert v1.cid == cid1
 
 @pytest.mark.asyncio
-async def test_concurrent_next_version(redis_client):
+async def test_concurrent_next_version(redis_client: fakeredis.FakeRedis) -> None:
     storage = FailingStorageBackend(0)
     registry = ModelRegistry(redis_client, storage)
 
@@ -73,7 +75,7 @@ async def test_concurrent_next_version(redis_client):
     assert sorted(results) == list(range(1, 11))
 
 @pytest.mark.asyncio
-async def test_upload_backoff_and_success(redis_client):
+async def test_upload_backoff_and_success(redis_client: fakeredis.FakeRedis) -> None:
     # This will fail twice, succeed on third attempt
     storage = FailingStorageBackend(fail_count=2)
     registry = ModelRegistry(redis_client, storage)

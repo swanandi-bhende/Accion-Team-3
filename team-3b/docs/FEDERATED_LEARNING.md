@@ -203,7 +203,7 @@ dropouts, real client disconnect, mid-run process crash).
 ### End-to-end smoke test (no Docker required)
 
 ```bash
-python scripts/fl_e2e_smoke.py
+python scripts/fl/fl_e2e_smoke.py
 ```
 
 Runs the documented entrypoint (`python -m federated_learning.runner`) **as a

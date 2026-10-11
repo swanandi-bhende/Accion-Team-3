@@ -68,9 +68,9 @@ class InferenceEngine:
 
         return receipt
 
-    async def _log_execution(self, execution_id: str, model_id: str, input_hash: str, duration: float, timestamp: float):
+    async def _log_execution(self, execution_id: str, model_id: str, input_hash: str, duration: float, timestamp: float) -> None:
         """Persist execution to a durable Redis Stream for auditing."""
-        audit_entry = {
+        audit_entry: dict[str | bytes | memoryview | int | float, str | bytes | memoryview | int | float] = {
             "execution_id": execution_id,
             "model_id": model_id,
             "input_hash": input_hash,

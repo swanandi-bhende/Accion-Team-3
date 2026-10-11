@@ -9,7 +9,7 @@ RESULT_PATH = Path(__file__).resolve().parents[2] / "data" / "zkml_spike" / "ben
 
 
 @pytest.mark.parametrize("architecture", SUPPORTED_ARCHITECTURES)
-def test_real_ezkl_architecture_benchmark_verified(architecture):
+def test_real_ezkl_architecture_benchmark_verified(architecture: str) -> None:
     result = json.loads(RESULT_PATH.read_text())
     benchmark = next(item for item in result["benchmarks"] if item["architecture"] == architecture)
     assert benchmark["verified"] is True

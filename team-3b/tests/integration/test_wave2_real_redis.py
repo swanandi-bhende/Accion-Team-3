@@ -6,7 +6,7 @@ from proof_submitter import ProofSubmitter
 
 
 @pytest.mark.asyncio
-async def test_wave2_persistence_and_dlq_use_real_redis_when_available():
+async def test_wave2_persistence_and_dlq_use_real_redis_when_available() -> None:
     client = redis.from_url("redis://localhost:6379", decode_responses=False)
     try:
         try:

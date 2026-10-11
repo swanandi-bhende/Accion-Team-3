@@ -1,4 +1,6 @@
 import asyncio
+import signal
+import sys
 
 import redis.asyncio as redis
 
@@ -18,4 +20,31 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    shutdown = loop.create_future()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(
+            sig,
+            lambda s=sig: loop.call_soon_threadsafe(shutdown.set_result, s),
+        )
+
+    try:
+        loop.run_until_complete(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        finally:
+            loop.close()
+
+    signame = getattr(sys.modules.get("signal"), "Signals", None)
+    if signame is not None:
+        try:
+            pending = signame(shutdown.result()).name if shutdown.done() and not shutdown.cancelled() else ""
+        except Exception:
+            pending = ""
+    print(f"event-listener: stopped (signal={pending or 'exit'})", flush=True)
+    sys.exit(0)

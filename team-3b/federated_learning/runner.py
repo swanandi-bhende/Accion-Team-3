@@ -20,7 +20,7 @@ from federated_learning.simulated_client import make_simulated_clients
 async def main() -> None:
     settings = get_settings().require("redis_url", "model_storage_url")
     redis_client = redis.from_url(settings.redis_url, decode_responses=False)
-    storage = IPFSBackend(node_url=settings.model_storage_url)
+    storage = IPFSBackend(node_url=settings.model_storage_url or "http://localhost:5001")
     registry = ModelRegistry(redis_client, storage)
 
     config = FLTaskConfig(

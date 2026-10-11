@@ -72,7 +72,7 @@ class ConcreteTEEVerifier:
 
 
 class ConcreteZkMLVerifier:
-    def __init__(self):
+    def __init__(self) -> None:
         self._verifier = ProofVerifier()
 
     async def verify(self, proof_bytes: bytes, public_inputs: dict[str, Any]) -> tuple[bool, str]:

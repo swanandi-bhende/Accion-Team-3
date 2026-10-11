@@ -17,7 +17,8 @@ class StorageProofResolver:
     async def resolve(self, reference: str) -> bytes:
         if reference.startswith("Qm") or reference.startswith("bafy"):
             try:
-                return await self.storage.retrieve(reference)
+                content: bytes = await self.storage.retrieve(reference)
+                return content
             except Exception as error:
                 raise ProofResolutionError(f"Unable to resolve CID: {reference}") from error
 

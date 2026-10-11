@@ -28,11 +28,10 @@ def _websocket_provider_factory() -> Any:
     if factory is not None:
         return factory
     try:
-        from web3.providers.websocket import WebSocketProvider
-
-        return WebSocketProvider
+        from web3.providers import websocket
     except ImportError:
         return None
+    return getattr(websocket, "WebSocketProvider", None)
 
 
 def build_provider(websocket_url: str) -> Any:
@@ -54,7 +53,8 @@ def build_provider(websocket_url: str) -> Any:
 def load_contract_abi(contract_name: str, artifact_dir: Path = ARTIFACT_DIR) -> list[dict[str, Any]]:
     artifact_path = artifact_dir / f"{contract_name}.sol" / f"{contract_name}.json"
     with artifact_path.open(encoding="utf-8") as artifact_file:
-        return json.load(artifact_file)["abi"]
+        abi: list[dict[str, Any]] = json.load(artifact_file)["abi"]
+    return abi
 
 
 def load_event_listener_config(
@@ -67,9 +67,9 @@ def load_event_listener_config(
     settings = get_settings().require(
         "web3_ws_url", "task_manager_address", "escrow_address"
     )
-    websocket_url = websocket_url or settings.web3_ws_url
-    task_manager_address = task_manager_address or settings.task_manager_address
-    escrow_address = escrow_address or settings.escrow_address
+    websocket_url = websocket_url or settings.web3_ws_url or ""
+    task_manager_address = task_manager_address or settings.task_manager_address or ""
+    escrow_address = escrow_address or settings.escrow_address or ""
     web3 = Web3(build_provider(websocket_url))
     return {
         "web3": web3,

@@ -27,13 +27,15 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 from flwr.server import start_server
+from flwr.server.history import History
 from flwr.server.server_config import ServerConfig
 
-from common.models import FLTaskConfig
+from common.models import FLTaskConfig, RoundProvenance
 from federated_learning.strategies import ProvenanceStrategy, build_strategy
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -46,7 +48,7 @@ pytestmark = pytest.mark.fl_network
 def _free_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
+        return int(probe.getsockname()[1])
 
 
 def _spawn_clients(address: str, count: int) -> list[subprocess.Popen]:
@@ -84,7 +86,9 @@ def _terminate(processes: list[subprocess.Popen]) -> None:
             process.kill()
 
 
-def _run_server(config: FLTaskConfig, address: str, on_record):
+def _run_server(
+    config: FLTaskConfig, address: str, on_record: Callable[[RoundProvenance], None]
+) -> History:
     strategy = ProvenanceStrategy(
         build_strategy(config), config.aggregation_strategy, on_record=on_record
     )
@@ -95,11 +99,11 @@ def _run_server(config: FLTaskConfig, address: str, on_record):
     )
 
 
-def test_real_fl_training_loss_decreases_over_rounds():
+def test_real_fl_training_loss_decreases_over_rounds() -> None:
     """Step 15.3: real server + 3 real client processes, loss falls each round."""
     address = f"127.0.0.1:{_free_port()}"
     processes = _spawn_clients(address, NUM_CLIENTS)
-    records = []
+    records: list[RoundProvenance] = []
     started = time.time()
     try:
         config = FLTaskConfig(
@@ -123,7 +127,7 @@ def test_real_fl_training_loss_decreases_over_rounds():
     print(f"\nreal FL run: {len(losses)} rounds, {elapsed:.2f}s wall clock")
 
 
-def test_real_fl_round_completes_after_a_client_disconnects():
+def test_real_fl_round_completes_after_a_client_disconnects() -> None:
     """Step 15.4: a real mid-training client death does not crash the run.
 
     The disconnect is triggered from the provenance callback -- i.e. exactly when
@@ -132,9 +136,9 @@ def test_real_fl_round_completes_after_a_client_disconnects():
     """
     address = f"127.0.0.1:{_free_port()}"
     processes = _spawn_clients(address, NUM_CLIENTS)
-    records = []
+    records: list[RoundProvenance] = []
 
-    def on_record(record):
+    def on_record(record: RoundProvenance) -> None:
         records.append(record)
         if record.round_number == 1:
             processes[1].kill()  # a real process death, not a mocked "K responded" flag

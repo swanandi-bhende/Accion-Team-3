@@ -2,6 +2,8 @@
 .env
 .env
 .env.mock
+# Address file written by the mock deploy step (build output, like artifacts/).
+mocks/contracts/deployments/
 .env.*
 .env/
 

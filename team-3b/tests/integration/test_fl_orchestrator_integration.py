@@ -7,11 +7,14 @@ the Model Registry and loadable by the Inference Engine / TEE Runtime.
 
 import hashlib
 import json
+from collections.abc import Iterable, Sequence
+from typing import Any
 
 import fakeredis.aioredis as fakeredis
 import numpy as np
 import pytest
 from flwr.client import NumPyClient
+from flwr.common import NDArrays, Scalar
 
 from common.interfaces import StorageBackend
 from common.model_registry import ModelRegistry
@@ -28,8 +31,8 @@ BASELINE_WEIGHTS = [np.array([[1.0], [2.0]]), np.array([0.5])]
 
 
 class MockStorageBackend(StorageBackend):
-    def __init__(self):
-        self.store = {}
+    def __init__(self) -> None:
+        self.store: dict[str, bytes] = {}
 
     async def upload(self, data: bytes) -> str:
         cid = "Qm" + hashlib.sha256(data).hexdigest()
@@ -43,39 +46,49 @@ class MockStorageBackend(StorageBackend):
 
 
 class FixedClient(NumPyClient):
-    def __init__(self, client_id, weights=BASELINE_WEIGHTS):
+    def __init__(self, client_id: str, weights: NDArrays = BASELINE_WEIGHTS) -> None:
         self.client_id = client_id
         self._weights = [np.asarray(weight, dtype=np.float64) for weight in weights]
 
-    def get_parameters(self, config):
+    def get_parameters(self, config: dict[str, Scalar]) -> NDArrays:
         return [weight.copy() for weight in self._weights]
 
-    def fit(self, parameters, config):
+    def fit(
+        self, parameters: NDArrays, config: dict[str, Scalar]
+    ) -> tuple[NDArrays, int, dict[str, Scalar]]:
         return [weight.copy() for weight in self._weights], 1, {}
 
 
 class FailingClient(FixedClient):
-    def fit(self, parameters, config):
+    def fit(
+        self, parameters: NDArrays, config: dict[str, Scalar]
+    ) -> tuple[NDArrays, int, dict[str, Scalar]]:
         raise RuntimeError(f"{self.client_id} cannot serve this round")
 
 
 class MalformedClient(FixedClient):
-    def fit(self, parameters, config):
+    def fit(
+        self, parameters: NDArrays, config: dict[str, Scalar]
+    ) -> tuple[NDArrays, int, dict[str, Scalar]]:
         return [np.zeros((7, 3))], 1, {}
 
 
 class DropoutClient(FixedClient):
-    def __init__(self, client_id, inactive_rounds):
+    def __init__(self, client_id: str, inactive_rounds: Iterable[int]) -> None:
         super().__init__(client_id)
         self.inactive_rounds = set(inactive_rounds)
 
-    def fit(self, parameters, config):
+    def fit(
+        self, parameters: NDArrays, config: dict[str, Any]
+    ) -> tuple[NDArrays, int, dict[str, Scalar]]:
         if config.get("round") in self.inactive_rounds:
             raise RuntimeError(f"{self.client_id} dropped out in round {config['round']}")
         return super().fit(parameters, config)
 
 
-def build(clients, model_id="fl-model"):
+def build(
+    clients: Sequence[NumPyClient], model_id: str = "fl-model"
+) -> tuple[FederatedLearningOrchestrator, ModelRegistry, MockStorageBackend, Any]:
     redis_client = fakeredis.FakeRedis(decode_responses=False)
     storage = MockStorageBackend()
     registry = ModelRegistry(redis_client, storage)
@@ -86,7 +99,7 @@ def build(clients, model_id="fl-model"):
 
 
 @pytest.mark.asyncio
-async def test_zero_responding_clients_is_a_hard_failure():
+async def test_zero_responding_clients_is_a_hard_failure() -> None:
     """Decision: zero responses fails the run rather than advancing a stale model."""
     clients = [FailingClient("a"), FailingClient("b")]
     orchestrator, registry, _, redis_client = build(clients)
@@ -101,7 +114,7 @@ async def test_zero_responding_clients_is_a_hard_failure():
 
 
 @pytest.mark.asyncio
-async def test_malformed_wrong_shaped_update_is_rejected_without_crashing():
+async def test_malformed_wrong_shaped_update_is_rejected_without_crashing() -> None:
     clients = [FixedClient("good"), MalformedClient("bad")]
     orchestrator, registry, _, _ = build(clients)
     config = FLTaskConfig(task_id="malformed", num_clients=2, num_rounds=1)
@@ -113,7 +126,7 @@ async def test_malformed_wrong_shaped_update_is_rejected_without_crashing():
 
 
 @pytest.mark.asyncio
-async def test_varying_participation_is_reflected_per_round():
+async def test_varying_participation_is_reflected_per_round() -> None:
     clients = [
         FixedClient("always"),
         DropoutClient("sometimes", inactive_rounds={2}),
@@ -133,7 +146,7 @@ async def test_varying_participation_is_reflected_per_round():
 
 
 @pytest.mark.asyncio
-async def test_provenance_for_completed_rounds_survives_a_mid_run_failure():
+async def test_provenance_for_completed_rounds_survives_a_mid_run_failure() -> None:
     """14.5: rounds that finished before a crash stay durably recorded in Redis.
 
     Provenance is written incrementally per round (not batched at the end), so a
@@ -157,7 +170,7 @@ async def test_provenance_for_completed_rounds_survives_a_mid_run_failure():
 
 
 @pytest.mark.asyncio
-async def test_trained_model_is_loadable_by_the_inference_pipeline():
+async def test_trained_model_is_loadable_by_the_inference_pipeline() -> None:
     clients = make_simulated_clients(3, seed=2)
     orchestrator, registry, _, redis_client = build(clients, model_id="fl-e2e")
     config = FLTaskConfig(task_id="e2e", num_clients=3, num_rounds=2)

@@ -46,7 +46,7 @@ class VerificationResponse(BaseModel):
     reason_code: str | None = None
 
     @model_validator(mode="after")
-    def validate_result_fields(self):
+    def validate_result_fields(self) -> "VerificationResponse":
         if self.result and (self.public_inputs is None or self.reason_code is not None):
             raise ValueError("successful verification requires public_inputs only")
         if not self.result and (self.public_inputs is not None or self.reason_code is None):
@@ -82,7 +82,7 @@ class FLTaskConfig(BaseModel):
     dp_num_sampled_clients: int | None = None
 
     @model_validator(mode="after")
-    def validate_strategy_parameters(self):
+    def validate_strategy_parameters(self) -> "FLTaskConfig":
         if not 0 <= self.trim_fraction < 0.5:
             raise ValueError("trim_fraction must be in [0, 0.5)")
         if self.num_malicious_clients < 0:

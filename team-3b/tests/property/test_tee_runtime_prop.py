@@ -10,7 +10,7 @@ from inference.tee_runtime import TEERuntime
 
 
 @pytest.fixture
-def runtime():
+def runtime() -> TEERuntime:
     rt = TEERuntime("sgx")
     rt.initialize()
     return rt
@@ -18,10 +18,11 @@ def runtime():
 @settings(max_examples=20)
 @given(model_binary=st.binary(min_size=16, max_size=1000), input_data=st.binary(min_size=1, max_size=100))
 @pytest.mark.asyncio
-async def test_property_4_integrity_check_and_erase(model_binary, input_data):
+async def test_property_4_integrity_check_and_erase(model_binary: bytes, input_data: bytes) -> None:
     """Property 4: Mismatching hash raises IntegrityCheckFailedError and calls secure_erase."""
     rt = TEERuntime("sgx")
     rt.initialize()
+    assert rt.enclave is not None
 
     # We must encrypt the model_binary first so decrypt doesn't fail on GCM tag
     # For property test of hash failure, we encrypt a DIFFERENT binary, so decryption succeeds
@@ -47,10 +48,11 @@ async def test_property_4_integrity_check_and_erase(model_binary, input_data):
 
 @settings(max_examples=20)
 @given(input_data=st.binary(min_size=1, max_size=100), output_data=st.binary(min_size=1, max_size=100))
-def test_property_5_attestation_fields(input_data, output_data):
+def test_property_5_attestation_fields(input_data: bytes, output_data: bytes) -> None:
     """Property 5: AttestationReport has correct fields and hashes."""
     rt = TEERuntime("sgx")
     rt.initialize()
+    assert rt.enclave is not None
 
     report = rt.generate_attestation(input_data, output_data)
 

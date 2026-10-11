@@ -1,14 +1,16 @@
 import json
 import subprocess
 import time
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from web3 import Web3
 
 
 @pytest.fixture(scope="session")
-def w3():
+def w3() -> Iterator[Web3]:
     provider_url = 'http://127.0.0.1:8545'
     web3 = Web3(Web3.HTTPProvider(provider_url))
 
@@ -61,17 +63,18 @@ def w3():
 
     yield web3
 
-def load_abi(contract_name):
+def load_abi(contract_name: str) -> Any:
     path = f"mocks/contracts/artifacts/contracts/{contract_name}.sol/{contract_name}.json"
     with open(path) as f:
         return json.load(f)["abi"]
 
-def load_bytecode(contract_name):
+def load_bytecode(contract_name: str) -> str:
     path = f"mocks/contracts/artifacts/contracts/{contract_name}.sol/{contract_name}.json"
     with open(path) as f:
-        return json.load(f)["bytecode"]
+        bytecode: str = json.load(f)["bytecode"]
+    return bytecode
 
-def test_mock_chain_events_and_submit(w3):
+def test_mock_chain_events_and_submit(w3: Web3) -> None:
     # Ensure node is up
     assert w3.is_connected()
 
@@ -83,7 +86,7 @@ def test_mock_chain_events_and_submit(w3):
     tm_bytecode = load_bytecode("TaskManager")
     TaskManager = w3.eth.contract(abi=tm_abi, bytecode=tm_bytecode)
     tx_hash = TaskManager.constructor().transact()
-    tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+    tx_receipt: Any = w3.eth.wait_for_transaction_receipt(tx_hash)
     tm_address = tx_receipt.contractAddress
     task_manager = w3.eth.contract(address=tm_address, abi=tm_abi)
 
@@ -101,7 +104,7 @@ def test_mock_chain_events_and_submit(w3):
     deadline = 9999999999
     bounty = w3.to_wei(1, 'ether')
     tx_hash = task_manager.functions.createTask(desc_hash, deadline, bounty).transact()
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+    receipt: Any = w3.eth.wait_for_transaction_receipt(tx_hash)
 
     # Parse event
     events = task_manager.events.TaskCreated().process_receipt(receipt)

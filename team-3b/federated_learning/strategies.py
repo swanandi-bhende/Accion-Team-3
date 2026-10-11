@@ -15,8 +15,19 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from typing import Any
 
-from flwr.common import parameters_to_ndarrays
+from flwr.common import (
+    EvaluateIns,
+    EvaluateRes,
+    FitIns,
+    FitRes,
+    Parameters,
+    Scalar,
+    parameters_to_ndarrays,
+)
+from flwr.server.client_manager import ClientManager
+from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy import (
     DPFedAvgFixed,
     FedAvg,
@@ -87,7 +98,7 @@ def build_strategy(config: FLTaskConfig) -> Strategy:
     return builder(config)
 
 
-class ProvenanceStrategy:
+class ProvenanceStrategy(Strategy):
     """Wrap a Flower strategy so every aggregated round is recorded.
 
     The network (SuperLink) path has the server drive the rounds, so provenance
@@ -103,20 +114,51 @@ class ProvenanceStrategy:
         strategy_name: str,
         on_record: Callable[[RoundProvenance], None] | None = None,
         clock: Callable[[], float] = time.time,
-    ):
+    ) -> None:
         self._inner = inner
         self.strategy_name = strategy_name
         self.on_record = on_record
         self.clock = clock
         self.records: list[RoundProvenance] = []
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         # Guard against recursion during unpickling when ``_inner`` is unset.
         if name == "_inner":
             raise AttributeError(name)
         return getattr(self._inner, name)
 
-    def aggregate_fit(self, server_round, results, failures):
+    def initialize_parameters(self, client_manager: ClientManager) -> Parameters | None:
+        return self._inner.initialize_parameters(client_manager)
+
+    def configure_fit(
+        self, server_round: int, parameters: Parameters, client_manager: ClientManager
+    ) -> list[tuple[ClientProxy, FitIns]]:
+        return self._inner.configure_fit(server_round, parameters, client_manager)
+
+    def configure_evaluate(
+        self, server_round: int, parameters: Parameters, client_manager: ClientManager
+    ) -> list[tuple[ClientProxy, EvaluateIns]]:
+        return self._inner.configure_evaluate(server_round, parameters, client_manager)
+
+    def aggregate_evaluate(
+        self,
+        server_round: int,
+        results: list[tuple[ClientProxy, EvaluateRes]],
+        failures: list[tuple[ClientProxy, EvaluateRes] | BaseException],
+    ) -> tuple[float | None, dict[str, Scalar]]:
+        return self._inner.aggregate_evaluate(server_round, results, failures)
+
+    def evaluate(
+        self, server_round: int, parameters: Parameters
+    ) -> tuple[float, dict[str, Scalar]] | None:
+        return self._inner.evaluate(server_round, parameters)
+
+    def aggregate_fit(
+        self,
+        server_round: int,
+        results: list[tuple[ClientProxy, FitRes]],
+        failures: list[tuple[ClientProxy, FitRes] | BaseException],
+    ) -> tuple[Parameters | None, dict[str, Scalar]]:
         started = self.clock()
         parameters, metrics = self._inner.aggregate_fit(server_round, results, failures)
         if parameters is not None:

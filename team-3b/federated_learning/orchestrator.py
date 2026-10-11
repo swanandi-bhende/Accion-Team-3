@@ -20,10 +20,12 @@ import asyncio
 import hashlib
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
+from typing import Any, cast
 
 import numpy as np
+from flwr.client import NumPyClient
 from flwr.common import (
     Code,
     FitRes,
@@ -31,7 +33,9 @@ from flwr.common import (
     ndarrays_to_parameters,
     parameters_to_ndarrays,
 )
+from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy import Strategy
+from redis.asyncio import Redis
 
 from common.model_registry import ModelRegistry
 from common.models import FLTaskConfig, RoundProvenance
@@ -70,7 +74,12 @@ class LocalFlowerServer:
     and ``Strategy`` interfaces.
     """
 
-    def __init__(self, clients, initial_parameters, round_number: int = 0):
+    def __init__(
+        self,
+        clients: Iterable[NumPyClient],
+        initial_parameters: Iterable[Any],
+        round_number: int = 0,
+    ) -> None:
         self.clients = list(clients)
         self.parameters = [np.asarray(parameter, dtype=np.float64) for parameter in initial_parameters]
         self.round_number = round_number
@@ -89,12 +98,12 @@ class FederatedLearningOrchestrator:
     def __init__(
         self,
         registry: ModelRegistry,
-        redis_client,
-        clients,
+        redis_client: Redis,
+        clients: Iterable[NumPyClient],
         model_id: str,
         architecture: str | None = None,
         clock: Callable[[], float] = time.time,
-    ):
+    ) -> None:
         if not clients:
             raise ValueError("FederatedLearningOrchestrator requires at least one client")
         self.registry = registry
@@ -118,7 +127,9 @@ class FederatedLearningOrchestrator:
     def _initial_parameters(self) -> list[np.ndarray]:
         return [np.asarray(parameter, dtype=np.float64) for parameter in self.clients[0].get_parameters({})]
 
-    async def _execute_round(self, server: LocalFlowerServer, round_timeout: float):
+    async def _execute_round(
+        self, server: LocalFlowerServer, round_timeout: float
+    ) -> tuple[list[tuple[str, FitRes]], list[tuple[str, BaseException]], list[str]]:
         """Distribute the global model and collect fit results within the timeout."""
         server.round_number += 1
         global_parameters = server.parameters
@@ -166,7 +177,7 @@ class FederatedLearningOrchestrator:
         return results, failures, timed_out
 
     @staticmethod
-    def _valid_update(parameters, expected_shapes: Sequence[tuple[int, ...]]) -> bool:
+    def _valid_update(parameters: Iterable[Any], expected_shapes: Sequence[tuple[int, ...]]) -> bool:
         try:
             arrays = [np.asarray(parameter, dtype=np.float64) for parameter in parameters]
         except (TypeError, ValueError):
@@ -176,7 +187,10 @@ class FederatedLearningOrchestrator:
         return all(array.shape == shape for array, shape in zip(arrays, expected_shapes, strict=True))
 
     async def _persist_provenance(self, task_id: str, record: RoundProvenance) -> None:
-        await self.redis.rpush(f"{self.PROVENANCE_KEY_PREFIX}{task_id}", record.model_dump_json())
+        await cast(
+            Awaitable[int],
+            self.redis.rpush(f"{self.PROVENANCE_KEY_PREFIX}{task_id}", record.model_dump_json()),
+        )
 
     async def run_training(self, config: FLTaskConfig) -> TrainingResult:
         """Run every configured round and store the final model."""
@@ -192,7 +206,13 @@ class FederatedLearningOrchestrator:
                     f"No clients responded in round {server.round_number} for task {config.task_id}"
                 )
 
-            aggregated, _metrics = strategy.aggregate_fit(server.round_number, results, failures)
+            # Flower's built-in strategies read only the FitRes half of each pair, so
+            # the string client ids stand in for ClientProxy objects here.
+            aggregated, _metrics = strategy.aggregate_fit(
+                server.round_number,
+                cast(list[tuple[ClientProxy, FitRes]], results),
+                cast(list[tuple[ClientProxy, FitRes] | BaseException], failures),
+            )
             if aggregated is None:
                 raise NoClientsRespondedError(
                     f"Strategy produced no parameters in round {server.round_number}"

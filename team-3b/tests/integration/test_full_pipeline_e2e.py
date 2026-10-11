@@ -12,18 +12,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 import fakeredis.aioredis as fakeredis
 import pytest
 
+from common.interfaces import StorageBackend
 from common.model_registry import ModelRegistry
-from common.models import VerificationRequest
+from common.models import AttestationReport, ProofArtifact, VerificationRequest
 from event_listener.listener import EventListener
+from inference.enclave_sim import EnclaveSim
 from inference.engine import InferenceEngine
 from inference.pipeline import OUTCOME_SUBMITTED, Pipeline
 from inference.tee_runtime import TEERuntime
 from proof_generator.zkml_prover import ZkMLProver
-from proof_submitter.submitter import ProofSubmitter
+from proof_submitter.submitter import PendingProof, ProofSubmitter
 from verification.interface import VerificationInterface
 from verification.resolver import StorageProofResolver
 from verification.verifiers import (
@@ -37,24 +42,34 @@ MODEL_ARCHITECTURE = "mlp"
 MODEL_BINARY = b"MOCK_MLP_WEIGHTS_67890"
 BATCH_SIZE = 6
 
+FundedTaskFactory = Callable[[bytes], tuple[bytes, Any, Any]]
+
 
 class CapturingSubmitter:
     """Forward every call to the real submitter, recording what it was handed."""
 
-    def __init__(self, inner):
+    def __init__(self, inner: ProofSubmitter) -> None:
         self.inner = inner
-        self.submissions = []
+        self.submissions: list[tuple[str, AttestationReport, ProofArtifact, str]] = []
 
-    async def submit_proof(self, task_id, attestation, zkml_proof, model_cid):
+    async def submit_proof(
+        self,
+        task_id: str,
+        attestation: AttestationReport,
+        zkml_proof: ProofArtifact,
+        model_cid: str,
+    ) -> PendingProof:
         self.submissions.append((task_id, attestation, zkml_proof, model_cid))
         return await self.inner.submit_proof(task_id, attestation, zkml_proof, model_cid)
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         return getattr(self.inner, name)
 
 
 @pytest.fixture
-def wired(mock_chain, memory_storage, tmp_path):
+def wired(
+    mock_chain: tuple[Any, Any, Any], memory_storage: StorageBackend, tmp_path: Path
+) -> dict[str, Any]:
     """Real components end to end; only storage/IPFS is a double."""
     web3, task_manager, escrow = mock_chain
     redis_client = fakeredis.FakeRedis(decode_responses=False)
@@ -62,6 +77,7 @@ def wired(mock_chain, memory_storage, tmp_path):
 
     tee = TEERuntime("sgx")
     tee.initialize()
+    assert isinstance(tee.enclave, EnclaveSim)
     engine = InferenceEngine(registry, tee, redis_client, timeout_s=30.0)
     prover = ZkMLProver(registry, proving_key_store=str(tmp_path / "proving_keys"))
     submitter = CapturingSubmitter(
@@ -97,8 +113,8 @@ def wired(mock_chain, memory_storage, tmp_path):
 
 @pytest.mark.asyncio
 async def test_full_pipeline_settles_and_verifies_one_task(
-    wired, create_funded_task
-):
+    wired: dict[str, Any], create_funded_task: FundedTaskFactory
+) -> None:
     pipeline, registry = wired["pipeline"], wired["registry"]
     web3, redis_client = wired["web3"], wired["redis"]
     tee, interface = wired["tee"], wired["interface"]
@@ -182,7 +198,9 @@ async def test_full_pipeline_settles_and_verifies_one_task(
 
 
 @pytest.mark.asyncio
-async def test_dispatch_to_confirmation_latency_over_a_small_batch(wired, create_funded_task):
+async def test_dispatch_to_confirmation_latency_over_a_small_batch(
+    wired: dict[str, Any], create_funded_task: FundedTaskFactory
+) -> None:
     """Step 16.9: real numbers for the whole chain, settled one task at a time.
 
     The batch is settled serially on purpose: a flush carries every proof that is

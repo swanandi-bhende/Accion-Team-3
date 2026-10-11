@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from common.exceptions import UnsupportedFormatError
-from common.models import VerificationRequest
+from common.models import VerificationRequest, VerificationResponse
 from verification.interface import VerificationInterface
 
 
@@ -31,11 +31,11 @@ def create_app(interface: VerificationInterface, timeout_s: float = 5.0) -> Fast
     app = FastAPI(title="Verifiable AI Verification Interface")
 
     @app.exception_handler(UnsupportedFormatError)
-    async def unsupported_format_handler(_request: Request, error: UnsupportedFormatError):
+    async def unsupported_format_handler(_request: Request, error: UnsupportedFormatError) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": str(error), "supported": error.supported})
 
-    @app.post("/verify")
-    async def verify(request: VerificationRequest):
+    @app.post("/verify", response_model=VerificationResponse)
+    async def verify(request: VerificationRequest) -> VerificationResponse | JSONResponse:
         try:
             return await asyncio.wait_for(interface.verify(request), timeout=timeout_s)
         except TimeoutError:
@@ -45,7 +45,7 @@ def create_app(interface: VerificationInterface, timeout_s: float = 5.0) -> Fast
             )
 
     @app.get("/health")
-    async def health():
+    async def health() -> dict[str, str]:
         return {"status": "ok"}
 
     return app

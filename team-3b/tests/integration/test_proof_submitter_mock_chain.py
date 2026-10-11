@@ -1,10 +1,13 @@
 import json
 import subprocess
 import time
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any, cast
 
 import fakeredis.aioredis as fakeredis
 import pytest
+from eth_typing import HexStr
 from web3 import Web3
 
 from common.models import AttestationReport, ProofArtifact
@@ -15,7 +18,7 @@ CONTRACTS = ROOT / "mocks" / "contracts"
 
 
 @pytest.fixture(scope="module")
-def deployed_task_manager():
+def deployed_task_manager() -> Iterator[tuple[Web3, Any]]:
     web3 = Web3(Web3.HTTPProvider("http://127.0.0.1:8545"))
     process = None
     if not web3.is_connected():
@@ -35,7 +38,7 @@ def deployed_task_manager():
     web3.eth.default_account = web3.eth.accounts[0]
     artifact = json.loads((CONTRACTS / "artifacts/contracts/TaskManager.sol/TaskManager.json").read_text())
     contract = web3.eth.contract(abi=artifact["abi"], bytecode=artifact["bytecode"])
-    receipt = web3.eth.wait_for_transaction_receipt(contract.constructor().transact())
+    receipt: Any = web3.eth.wait_for_transaction_receipt(contract.constructor().transact())
     instance = web3.eth.contract(address=receipt.contractAddress, abi=artifact["abi"])
     yield web3, instance
     if process is not None and process.poll() is None:
@@ -44,7 +47,7 @@ def deployed_task_manager():
 
 
 @pytest.mark.asyncio
-async def test_submitter_sends_real_batched_submit_proofs(deployed_task_manager):
+async def test_submitter_sends_real_batched_submit_proofs(deployed_task_manager: tuple[Web3, Any]) -> None:
     web3, contract = deployed_task_manager
     submitter = ProofSubmitter(
         web3,
@@ -69,10 +72,11 @@ async def test_submitter_sends_real_batched_submit_proofs(deployed_task_manager)
         for index in range(3)
     ]
     submitter._pending_proofs.clear()
+    assert submitter._batch_timer is not None
     submitter._batch_timer.cancel()
 
     tx_hash = await submitter._send_transaction(proofs)
 
-    receipt = web3.eth.get_transaction_receipt(tx_hash)
+    receipt: Any = web3.eth.get_transaction_receipt(cast(HexStr, tx_hash))
     assert receipt.status == 1
     assert submitter.metrics["proofs_submitted"] == 0

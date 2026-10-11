@@ -9,9 +9,12 @@ so the test must also set ``MODEL_STORAGE_URL`` / ``REDIS_URL`` via monkeypatch
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Awaitable
+from typing import cast
 
 import fakeredis.aioredis as fakeredis
 import pytest
+from redis.asyncio import Redis
 
 import common.config as _common_config
 import federated_learning.runner as runner
@@ -25,8 +28,8 @@ FL_NUM_ROUNDS = 2
 
 
 class InMemoryStorage(StorageBackend):
-    def __init__(self):
-        self.store = {}
+    def __init__(self) -> None:
+        self.store: dict[str, bytes] = {}
 
     async def upload(self, data: bytes) -> str:
         cid = "Qm" + hashlib.sha256(data).hexdigest()
@@ -37,7 +40,7 @@ class InMemoryStorage(StorageBackend):
         return self.store[cid]
 
 
-def _setup_runner_env(monkeypatch):
+def _setup_runner_env(monkeypatch: pytest.MonkeyPatch) -> tuple[Redis, InMemoryStorage]:
     """Set env vars and factory overrides that runner.main() needs.
 
     We call ``get_settings.cache_clear()`` so the entrypoint re-reads ``os.environ``
@@ -60,7 +63,7 @@ def _setup_runner_env(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_runner_wires_env_and_registers_model(monkeypatch, capsys):
+async def test_runner_wires_env_and_registers_model(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     redis_client, storage = _setup_runner_env(monkeypatch)
     monkeypatch.setenv("FL_TASK_ID", FL_TASK_ID)
     monkeypatch.setenv("FL_NUM_CLIENTS", str(FL_NUM_CLIENTS))
@@ -75,7 +78,7 @@ async def test_runner_wires_env_and_registers_model(monkeypatch, capsys):
 
 
 @pytest.mark.asyncio
-async def test_runner_honours_configured_strategy_and_persists_provenance(monkeypatch):
+async def test_runner_honours_configured_strategy_and_persists_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     redis_client, _storage = _setup_runner_env(monkeypatch)
     monkeypatch.setenv("FL_TASK_ID", "test_runner_strategy_task_id")
     monkeypatch.setenv("FL_NUM_CLIENTS", str(FL_NUM_CLIENTS))
@@ -85,5 +88,8 @@ async def test_runner_honours_configured_strategy_and_persists_provenance(monkey
 
     await runner.main()
 
-    records = await redis_client.lrange("fl:provenance:test_runner_strategy_task_id", 0, -1)
+    records = await cast(
+        Awaitable[list[bytes]],
+        redis_client.lrange("fl:provenance:test_runner_strategy_task_id", 0, -1),
+    )
     assert len(records) == FL_NUM_ROUNDS

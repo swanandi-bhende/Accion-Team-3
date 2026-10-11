@@ -22,7 +22,6 @@ class TEERuntime:
             self.mode = TEEMode.INTEL_SGX # default
 
         self.enclave: Enclave | None = None
-        self._initialized = False
 
     def _create_enclave(self) -> Enclave:
         """Adapter switch for TEE initialization."""
@@ -30,20 +29,23 @@ class TEERuntime:
         # In the future, branch here for SGXEnclave vs SEVEnclave
         return EnclaveSim()
 
-    def initialize(self):
+    @property
+    def initialized(self) -> bool:
+        return self.enclave is not None
+
+    def initialize(self) -> None:
         self.enclave = self._create_enclave()
-        self._initialized = True
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         self.enclave = None
-        self._initialized = False
 
-    def _check_initialized(self):
-        if not self._initialized or not self.enclave:
+    def _require_enclave(self) -> Enclave:
+        if self.enclave is None:
             raise TEEUnavailableError("TEERuntime is not initialized")
+        return self.enclave
 
     async def execute_inference(self, model_binary: bytes, model_hash: str, input_data: bytes, sealed_key: bytes) -> bytes:
-        self._check_initialized()
+        enclave = self._require_enclave()
 
         # Check size constraint (Requirement 8.6) 500MB.
         if len(model_binary) > 500 * 1024 * 1024:
@@ -57,7 +59,7 @@ class TEERuntime:
             computed_hash = hashlib.sha256(model_binary).hexdigest()
             if computed_hash != model_hash:
                 try:
-                    decrypted_model = self.enclave.decrypt(model_binary, sealed_key)
+                    decrypted_model = enclave.decrypt(model_binary, sealed_key)
                 except InvalidTag as error:
                     # An AEAD tag failure means the stored bytes are not the artifact
                     # the registry committed to. That is the same violation as a
@@ -70,24 +72,24 @@ class TEERuntime:
             else:
                 decrypted_model = model_binary
 
-            output = await self.enclave.run_isolated(decrypted_model, input_data)
+            output = await enclave.run_isolated(decrypted_model, input_data)
             return output
         finally:
             if decrypted_model is not None and decrypted_model is not model_binary:
-                self.enclave.secure_erase(decrypted_model)
+                enclave.secure_erase(decrypted_model)
 
     def generate_attestation(self, input_data: bytes, output: bytes) -> AttestationReport:
-        self._check_initialized()
+        enclave = self._require_enclave()
 
         input_hash = hashlib.sha256(input_data).hexdigest()
         output_hash = hashlib.sha256(output).hexdigest()
 
-        payload_to_sign = f"{self.enclave.measurement}:{self.enclave.signer_id}:{input_hash}:{output_hash}".encode()
-        signature = self.enclave.sign(payload_to_sign)
+        payload_to_sign = f"{enclave.measurement}:{enclave.signer_id}:{input_hash}:{output_hash}".encode()
+        signature = enclave.sign(payload_to_sign)
 
         return AttestationReport(
-            enclave_measurement=self.enclave.measurement,
-            signer_identity=self.enclave.signer_id,
+            enclave_measurement=enclave.measurement,
+            signer_identity=enclave.signer_id,
             input_hash=input_hash,
             output_hash=output_hash,
             hardware_signature=signature,

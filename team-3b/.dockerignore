@@ -1,0 +1,12 @@
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.git
+.env
+.env.mock
+.env.example
+*.egg-info
+venv
+.venv
+docker-compose.override.yml

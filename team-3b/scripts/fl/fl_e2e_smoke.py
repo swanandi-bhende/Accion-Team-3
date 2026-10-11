@@ -26,7 +26,7 @@ For each aggregation strategy it asserts the durable effects:
 
 Usage::
 
-    python scripts/fl_e2e_smoke.py
+    python scripts/fl/fl_e2e_smoke.py
 """
 
 from __future__ import annotations
@@ -43,8 +43,9 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 PYTHON = str(ROOT / "venv" / "bin" / "python")
 NUM_CLIENTS = 3
 CASES = (("fedavg", 2), ("krum", 3))
@@ -55,7 +56,8 @@ _STORED_OBJECTS: dict[str, bytes] = {}
 def _free_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
+        port: int = probe.getsockname()[1]
+    return port
 
 
 def _multipart_file(body: bytes, content_type: str) -> bytes:
@@ -70,7 +72,7 @@ class _IPFSAPI(http.server.BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, *args) -> None:  # keep the smoke output readable
+    def log_message(self, *args: Any) -> None:  # keep the smoke output readable
         pass
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib naming
@@ -80,10 +82,11 @@ class _IPFSAPI(http.server.BaseHTTPRequestHandler):
             _STORED_OBJECTS[cid] = _multipart_file(raw, self.headers["Content-Type"])
             payload = json.dumps({"Name": "model.bin", "Hash": cid, "Size": "0"}).encode()
         elif self.path.startswith("/api/v0/cat"):
-            payload = _STORED_OBJECTS.get(self.path.split("arg=")[1])
-            if payload is None:
+            stored = _STORED_OBJECTS.get(self.path.split("arg=")[1])
+            if stored is None:
                 self.send_error(500)
                 return
+            payload = stored
         else:
             self.send_error(404)
             return
@@ -120,7 +123,7 @@ def _run_runner(strategy: str, task_id: str, model_id: str, rounds: int, base: d
     return completed.returncode == 0
 
 
-def _check_artifacts(redis_client, strategy: str, task_id: str, model_id: str, rounds: int) -> bool:
+def _check_artifacts(redis_client: Any, strategy: str, task_id: str, model_id: str, rounds: int) -> bool:
     records = redis_client.lrange(f"fl:provenance:{task_id}", 0, -1)
     print(f"    fl:provenance:{task_id} -> {len(records)} records")
     if len(records) != rounds:
@@ -166,7 +169,7 @@ def main() -> int:
     try:
         import redis
     except ImportError:
-        print("redis package is required (pip install -r requirements.txt)")
+        print("redis package is required (pip install -r requirements/base.txt)")
         return 2
 
     redis_port = _free_port()

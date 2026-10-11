@@ -40,14 +40,25 @@ async function main() {
 
   // Write to .env.mock for local dev. The mock TaskManager also exposes
   // submitProofs, so it *is* the local settlement contract.
-  const envMockContent = [
-    `TASK_MANAGER_ADDRESS=${taskManagerAddress}`,
-    `ESCROW_ADDRESS=${escrowAddress}`,
-    `PROOF_SUBMITTER_CONTRACT_ADDRESS=${taskManagerAddress}`,
-    "",
-  ].join("\n");
+  const addresses = {
+    TASK_MANAGER_ADDRESS: taskManagerAddress,
+    ESCROW_ADDRESS: escrowAddress,
+    PROOF_SUBMITTER_CONTRACT_ADDRESS: taskManagerAddress,
+  };
+  const envMockContent = Object.entries(addresses)
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n") + "\n";
   fs.writeFileSync("../../.env.mock", envMockContent);
   console.log("Wrote addresses to .env.mock");
+
+  // Machine-readable copy for services that start before .env.mock exists: it is
+  // read through MOCK_DEPLOYMENTS_PATH (see common/config.py).
+  fs.mkdirSync("deployments", { recursive: true });
+  fs.writeFileSync(
+    "deployments/localhost.json",
+    JSON.stringify(addresses, null, 2) + "\n"
+  );
+  console.log("Wrote addresses to deployments/localhost.json");
 
   // Optional: Trigger a mock task immediately if requested
   if (process.env.TRIGGER_MOCK_TASK === "true") {

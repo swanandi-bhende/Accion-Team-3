@@ -1,4 +1,6 @@
 import asyncio
+from collections.abc import Awaitable
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import fakeredis.aioredis as fakeredis
@@ -12,7 +14,9 @@ from inference.tee_runtime import TEERuntime
 from tests.property.test_model_registry_prop import MockStorageBackend
 
 
-def build_engine(timeout_s=30.0):
+def build_engine(
+    timeout_s: float = 30.0,
+) -> tuple[InferenceEngine, ModelRegistry, MockStorageBackend]:
     redis_client = fakeredis.FakeRedis(decode_responses=False)
     storage = MockStorageBackend()
     registry = ModelRegistry(redis_client, storage)
@@ -22,7 +26,7 @@ def build_engine(timeout_s=30.0):
 
 
 @pytest.mark.asyncio
-async def test_empty_input_data_produces_a_receipt():
+async def test_empty_input_data_produces_a_receipt() -> None:
     engine, registry, storage = build_engine()
     model_binary = b"empty-input-model"
     cid = await storage.upload(model_binary)
@@ -37,7 +41,7 @@ async def test_empty_input_data_produces_a_receipt():
 
 
 @pytest.mark.asyncio
-async def test_unusual_model_id_is_stored_and_resolved_exactly():
+async def test_unusual_model_id_is_stored_and_resolved_exactly() -> None:
     engine, registry, storage = build_engine()
     model_id = "../model%{hash}[0]:unicode-like"
     model_binary = b"unusual-id-model"
@@ -51,13 +55,13 @@ async def test_unusual_model_id_is_stored_and_resolved_exactly():
 
 
 @pytest.mark.asyncio
-async def test_timeout_boundary_uses_exactly_30_seconds():
+async def test_timeout_boundary_uses_exactly_30_seconds() -> None:
     engine, registry, storage = build_engine(timeout_s=30.0)
     model_binary = b"timeout-boundary-model"
     cid = await storage.upload(model_binary)
     await registry.register("timeout-boundary", cid, model_binary)
 
-    async def record_wait_for(awaitable, timeout):
+    async def record_wait_for(awaitable: Awaitable[Any], timeout: float) -> Any:
         assert timeout == 30.0
         return await awaitable
 
@@ -70,19 +74,21 @@ async def test_timeout_boundary_uses_exactly_30_seconds():
 
 
 @pytest.mark.asyncio
-async def test_timeout_error_branch_is_raised():
+async def test_timeout_error_branch_is_raised(monkeypatch: pytest.MonkeyPatch) -> None:
     engine, registry, storage = build_engine(timeout_s=30.0)
     model_binary = b"timeout-model"
     cid = await storage.upload(model_binary)
     await registry.register("timeout-model", cid, model_binary)
-    engine.tee.execute_inference = AsyncMock(side_effect=asyncio.TimeoutError)
+    monkeypatch.setattr(
+        engine.tee, "execute_inference", AsyncMock(side_effect=asyncio.TimeoutError)
+    )
 
     with pytest.raises(TimeoutExceededError):
         await engine.execute(InferenceRequest(model_id="timeout-model", input_data=b"x"))
 
 
 @pytest.mark.asyncio
-async def test_redis_reconnects_after_client_close():
+async def test_redis_reconnects_after_client_close() -> None:
     redis_client = __import__("redis.asyncio", fromlist=["Redis"]).Redis.from_url(
         "redis://localhost:6379", decode_responses=False
     )

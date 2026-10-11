@@ -34,6 +34,7 @@ from collections.abc import Callable
 
 from flwr.client import start_client
 from flwr.server import start_server
+from flwr.server.history import History
 from flwr.server.server_config import ServerConfig
 
 from common.models import FLTaskConfig, RoundProvenance
@@ -73,7 +74,7 @@ def run_server(
     server_address: str,
     on_record: Callable[[RoundProvenance], None] | None = None,
     redis_url: str | None = None,
-):
+) -> History:
     """Run the blocking gRPC Flower server and return its ``History``.
 
     ``config.round_timeout`` is enforced by Flower as a per-round timeout, so a

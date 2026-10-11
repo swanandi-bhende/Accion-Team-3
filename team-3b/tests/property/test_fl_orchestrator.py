@@ -11,6 +11,8 @@ Property 11: a completed training job stores a model whose CID resolves back to
 import hashlib
 import logging
 import time
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import fakeredis.aioredis as fakeredis
 import numpy as np
@@ -19,17 +21,21 @@ from flwr.client import NumPyClient
 from flwr.common import (
     Code,
     FitRes,
+    NDArrays,
+    Parameters,
+    Scalar,
     Status,
     ndarrays_to_parameters,
     parameters_to_ndarrays,
 )
+from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy import FedAvg
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from common.interfaces import StorageBackend
 from common.model_registry import ModelRegistry
-from common.models import FLTaskConfig
+from common.models import FLTaskConfig, RoundProvenance
 from federated_learning.orchestrator import (
     FederatedLearningOrchestrator,
     NoClientsRespondedError,
@@ -46,8 +52,8 @@ MODEL_ID = "fl-model"
 
 
 class MockStorageBackend(StorageBackend):
-    def __init__(self):
-        self.store = {}
+    def __init__(self) -> None:
+        self.store: dict[str, bytes] = {}
 
     async def upload(self, data: bytes) -> str:
         cid = "Qm" + hashlib.sha256(data).hexdigest()
@@ -63,41 +69,43 @@ class MockStorageBackend(StorageBackend):
 class FixedClient(NumPyClient):
     """A well-behaved client that always returns the same weights."""
 
-    def __init__(self, client_id: str, weights):
+    def __init__(self, client_id: str, weights: NDArrays) -> None:
         self.client_id = client_id
         self._weights = [np.asarray(weight, dtype=np.float64) for weight in weights]
 
-    def get_parameters(self, config):
+    def get_parameters(self, config: dict[str, Scalar]) -> NDArrays:
         return [weight.copy() for weight in self._weights]
 
-    def fit(self, parameters, config):
+    def fit(self, parameters: NDArrays, config: dict[str, Scalar]) -> tuple[NDArrays, int, dict[str, Scalar]]:
         return [weight.copy() for weight in self._weights], 1, {}
 
-    def evaluate(self, parameters, config):
+    def evaluate(self, parameters: NDArrays, config: dict[str, Scalar]) -> tuple[float, int, dict[str, Scalar]]:
         return 0.0, 1, {}
 
 
 class FailingClient(FixedClient):
-    def fit(self, parameters, config):
+    def fit(self, parameters: NDArrays, config: dict[str, Scalar]) -> tuple[NDArrays, int, dict[str, Scalar]]:
         raise RuntimeError(f"{self.client_id} failed")
 
 
 class SlowClient(FixedClient):
-    def __init__(self, client_id, weights, delay: float):
+    def __init__(self, client_id: str, weights: NDArrays, delay: float) -> None:
         super().__init__(client_id, weights)
         self.delay = delay
 
-    def fit(self, parameters, config):
+    def fit(self, parameters: NDArrays, config: dict[str, Scalar]) -> tuple[NDArrays, int, dict[str, Scalar]]:
         time.sleep(self.delay)
         return super().fit(parameters, config)
 
 
 class MalformedClient(FixedClient):
-    def fit(self, parameters, config):
+    def fit(self, parameters: NDArrays, config: dict[str, Scalar]) -> tuple[NDArrays, int, dict[str, Scalar]]:
         return [np.zeros((1,))], 1, {}
 
 
-def build_orchestrator(clients, clock=time.time):
+def build_orchestrator(
+    clients: Sequence[NumPyClient], clock: Callable[[], float] = time.time
+) -> tuple[FederatedLearningOrchestrator, ModelRegistry, MockStorageBackend, Any]:
     redis_client = fakeredis.FakeRedis(decode_responses=False)
     storage = MockStorageBackend()
     registry = ModelRegistry(redis_client, storage)
@@ -122,9 +130,9 @@ _WEIGHT_FLOATS = st.floats(
     dimension=st.integers(min_value=1, max_value=6),
     values=st.lists(_WEIGHT_FLOATS, min_size=36, max_size=36),
 )
-def test_property_9_weighted_average_is_mean_for_equal_sizes(num_clients, dimension, values):
+def test_property_9_weighted_average_is_mean_for_equal_sizes(num_clients: int, dimension: int, values: list[float]) -> None:
     vectors = [
-        np.array(values[index * dimension : (index + 1) * dimension], dtype=np.float64).reshape(-1, 1)
+        np.array(values[index * dimension : (index + 1) * dimension], dtype=np.float64).reshape(-1, 1)  # type: ignore[attr-defined]
         for index in range(num_clients)
     ]
 
@@ -134,7 +142,7 @@ def test_property_9_weighted_average_is_mean_for_equal_sizes(num_clients, dimens
     assert np.allclose(aggregated, expected, atol=1e-9)
 
 
-def test_property_9_fedavg_aggregation_matches_reference():
+def test_property_9_fedavg_aggregation_matches_reference() -> None:
     strategy = FedAvg(min_fit_clients=1, min_evaluate_clients=1, min_available_clients=1)
     updates = [
         [np.array([[1.0], [2.0]]), np.array([0.5])],
@@ -154,7 +162,7 @@ def test_property_9_fedavg_aggregation_matches_reference():
         for index, update in enumerate(updates)
     ]
 
-    aggregated, _ = strategy.aggregate_fit(1, results, [])
+    aggregated, _ = strategy.aggregate_fit(1, results, [])  # type: ignore[arg-type]
     assert aggregated is not None
     flower_result = parameters_to_ndarrays(aggregated)
     reference = weighted_average(updates, weights=[10, 10, 10])
@@ -169,7 +177,7 @@ def test_property_9_fedavg_aggregation_matches_reference():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("total_clients, responding", [(3, 1), (3, 2), (3, 3), (5, 1), (5, 2), (5, 4)])
-async def test_property_10_aggregation_proceeds_with_responding_subset(total_clients, responding):
+async def test_property_10_aggregation_proceeds_with_responding_subset(total_clients: int, responding: int) -> None:
     base_weights = [np.array([[1.0], [2.0]]), np.array([0.5])]
     clients = [FixedClient(f"client-{index}", base_weights) for index in range(responding)]
     clients += [FailingClient(f"client-{index}", base_weights) for index in range(responding, total_clients)]
@@ -187,7 +195,7 @@ async def test_property_10_aggregation_proceeds_with_responding_subset(total_cli
 
 
 @pytest.mark.asyncio
-async def test_property_10_timed_out_clients_excluded_and_logged(caplog):
+async def test_property_10_timed_out_clients_excluded_and_logged(caplog: pytest.LogCaptureFixture) -> None:
     base_weights = [np.array([[1.0], [2.0]]), np.array([0.5])]
     clients = [
         FixedClient("fast", base_weights),
@@ -208,7 +216,7 @@ async def test_property_10_timed_out_clients_excluded_and_logged(caplog):
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
-async def test_property_11_trained_model_is_stored_and_resolvable():
+async def test_property_11_trained_model_is_stored_and_resolvable() -> None:
     clients = make_simulated_clients(3, seed=1)
     orchestrator, registry, storage, redis_client = build_orchestrator(clients)
     config = FLTaskConfig(task_id="p11", num_clients=3, num_rounds=3)
@@ -236,7 +244,7 @@ async def test_property_11_trained_model_is_stored_and_resolvable():
 # Strategy selection (14.3)
 # --------------------------------------------------------------------------- #
 
-def test_build_strategy_defaults_to_fedavg_with_fault_tolerant_minimum():
+def test_build_strategy_defaults_to_fedavg_with_fault_tolerant_minimum() -> None:
     orchestrator, _, _, _ = build_orchestrator(make_simulated_clients(3))
     strategy = orchestrator._build_strategy(FLTaskConfig(task_id="s", num_clients=3, num_rounds=1))
 
@@ -245,7 +253,7 @@ def test_build_strategy_defaults_to_fedavg_with_fault_tolerant_minimum():
     assert strategy.min_available_clients == 3
 
 
-def test_build_strategy_rejects_unknown_name_instead_of_silently_defaulting():
+def test_build_strategy_rejects_unknown_name_instead_of_silently_defaulting() -> None:
     orchestrator, _, _, _ = build_orchestrator(make_simulated_clients(2))
 
     with pytest.raises(ValueError, match="Unknown aggregation strategy"):
@@ -254,7 +262,7 @@ def test_build_strategy_rejects_unknown_name_instead_of_silently_defaulting():
         )
 
 
-def test_simulated_client_evaluate_reports_local_loss():
+def test_simulated_client_evaluate_reports_local_loss() -> None:
     client = make_simulated_clients(1, seed=3)[0]
     loss, num_examples, metrics = client.evaluate(client.get_parameters({}), {})
 
@@ -263,7 +271,7 @@ def test_simulated_client_evaluate_reports_local_loss():
     assert "mse" in metrics
 
 
-def test_weighted_average_rejects_invalid_inputs():
+def test_weighted_average_rejects_invalid_inputs() -> None:
     single = [np.array([[1.0], [2.0]])]
 
     with pytest.raises(ValueError, match="at least one update"):
@@ -276,12 +284,12 @@ def test_weighted_average_rejects_invalid_inputs():
         weighted_average([[np.zeros((2, 1))], [np.zeros((3, 1))]])
 
 
-def test_orchestrator_requires_at_least_one_client():
+def test_orchestrator_requires_at_least_one_client() -> None:
     with pytest.raises(ValueError, match="at least one client"):
-        FederatedLearningOrchestrator(None, None, [], model_id=MODEL_ID)
+        FederatedLearningOrchestrator(None, None, [], model_id=MODEL_ID)  # type: ignore[arg-type]
 
 
-def test_strategy_registry_is_extensible_without_touching_run_training():
+def test_strategy_registry_is_extensible_without_touching_run_training() -> None:
     orchestrator, _, _, _ = build_orchestrator(make_simulated_clients(2))
     builders = type(orchestrator).STRATEGY_BUILDERS
     builders["custom"] = lambda config: FedAvg(min_fit_clients=1, min_available_clients=1)
@@ -295,7 +303,7 @@ def test_strategy_registry_is_extensible_without_touching_run_training():
 
 
 @pytest.mark.parametrize("strategy_name", ["fedavg", "fedmedian", "fedtrimmedavg", "krum", "dp_fedavg"])
-def test_every_registered_strategy_builds_and_aggregates(strategy_name):
+def test_every_registered_strategy_builds_and_aggregates(strategy_name: str) -> None:
     orchestrator, _, _, _ = build_orchestrator(make_simulated_clients(5))
     config = FLTaskConfig(task_id="s", num_clients=5, num_rounds=1, aggregation_strategy=strategy_name)
 
@@ -314,15 +322,15 @@ def test_every_registered_strategy_builds_and_aggregates(strategy_name):
         for index, update in enumerate(updates)
     ]
 
-    aggregated, _ = strategy.aggregate_fit(1, results, [])
+    aggregated, _ = strategy.aggregate_fit(1, results, [])  # type: ignore[arg-type]
 
     assert aggregated is not None
     arrays = parameters_to_ndarrays(aggregated)
     assert arrays and np.all(np.isfinite(arrays[0]))
 
 
-def test_provenance_strategy_records_each_aggregated_round():
-    recorded = []
+def test_provenance_strategy_records_each_aggregated_round() -> None:
+    recorded: list[RoundProvenance] = []
     inner = FedAvg(min_fit_clients=1, min_evaluate_clients=1, min_available_clients=3)
     strategy = ProvenanceStrategy(inner, "fedavg", on_record=recorded.append, clock=lambda: 1.0)
     results = [
@@ -337,7 +345,7 @@ def test_provenance_strategy_records_each_aggregated_round():
         )
     ]
 
-    strategy.aggregate_fit(1, results, [])
+    strategy.aggregate_fit(1, results, [])  # type: ignore[arg-type]
 
     assert len(strategy.records) == 1
     assert strategy.records[0].participating_clients == 1
@@ -347,7 +355,7 @@ def test_provenance_strategy_records_each_aggregated_round():
     assert strategy.min_fit_clients == inner.min_fit_clients
 
 
-def test_fl_task_config_rejects_invalid_strategy_parameters():
+def test_fl_task_config_rejects_invalid_strategy_parameters() -> None:
     with pytest.raises(ValueError):
         FLTaskConfig(task_id="x", num_clients=1, num_rounds=1, trim_fraction=0.7)
     with pytest.raises(ValueError):
@@ -356,7 +364,7 @@ def test_fl_task_config_rejects_invalid_strategy_parameters():
         FLTaskConfig(task_id="x", num_clients=1, num_rounds=1, num_malicious_clients=-1)
 
 
-def test_valid_update_rejects_malformed_types_and_shapes():
+def test_valid_update_rejects_malformed_types_and_shapes() -> None:
     """Guards the defensive branches: a non-numeric or wrong-shaped update is dropped."""
     expected = [(2, 1)]
 
@@ -370,12 +378,17 @@ def test_valid_update_rejects_malformed_types_and_shapes():
 class _NullAggregatingStrategy(FedAvg):
     """Selects no parameters, emulating a strategy that refuses to aggregate."""
 
-    def aggregate_fit(self, server_round, results, failures):
+    def aggregate_fit(
+        self,
+        server_round: int,
+        results: list[tuple[ClientProxy, FitRes]],
+        failures: list[tuple[ClientProxy, FitRes] | BaseException],
+    ) -> tuple[Parameters | None, dict[str, Scalar]]:
         return None, {}
 
 
 @pytest.mark.asyncio
-async def test_run_training_fails_when_strategy_produces_no_parameters():
+async def test_run_training_fails_when_strategy_produces_no_parameters() -> None:
     orchestrator, _, _, _ = build_orchestrator(make_simulated_clients(2))
     builders = type(orchestrator).STRATEGY_BUILDERS
     builders["null-agg"] = lambda config: _NullAggregatingStrategy(
@@ -389,7 +402,7 @@ async def test_run_training_fails_when_strategy_produces_no_parameters():
         del builders["null-agg"]
 
 
-def test_provenance_strategy_getattr_guard_prevents_unpickling_recursion():
+def test_provenance_strategy_getattr_guard_prevents_unpickling_recursion() -> None:
     strategy = ProvenanceStrategy(FedAvg(min_fit_clients=1, min_available_clients=1), "fedavg")
 
     with pytest.raises(AttributeError, match="_inner"):

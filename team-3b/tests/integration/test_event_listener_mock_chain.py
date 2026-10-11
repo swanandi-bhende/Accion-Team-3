@@ -1,7 +1,9 @@
 import json
 import subprocess
 import time
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import fakeredis.aioredis as fakeredis
 import pytest
@@ -13,14 +15,14 @@ ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS = ROOT / "mocks" / "contracts"
 
 
-def artifact(name):
+def artifact(name: str) -> tuple[Any, Any]:
     path = CONTRACTS / "artifacts" / "contracts" / f"{name}.sol" / f"{name}.json"
     data = json.loads(path.read_text())
     return data["abi"], data["bytecode"]
 
 
 @pytest.fixture(scope="module")
-def mock_chain():
+def mock_chain() -> Iterator[tuple[Web3, Any, Any]]:
     provider = Web3.HTTPProvider("http://127.0.0.1:8545")
     web3 = Web3(provider)
     process = None
@@ -42,10 +44,10 @@ def mock_chain():
     web3.eth.default_account = web3.eth.accounts[0]
     tm_abi, tm_bytecode = artifact("TaskManager")
     escrow_abi, escrow_bytecode = artifact("Escrow")
-    tm_receipt = web3.eth.wait_for_transaction_receipt(
+    tm_receipt: Any = web3.eth.wait_for_transaction_receipt(
         web3.eth.contract(abi=tm_abi, bytecode=tm_bytecode).constructor().transact()
     )
-    escrow_receipt = web3.eth.wait_for_transaction_receipt(
+    escrow_receipt: Any = web3.eth.wait_for_transaction_receipt(
         web3.eth.contract(abi=escrow_abi, bytecode=escrow_bytecode).constructor().transact()
     )
     yield web3, web3.eth.contract(address=tm_receipt.contractAddress, abi=tm_abi), web3.eth.contract(
@@ -58,17 +60,17 @@ def mock_chain():
 
 
 @pytest.mark.asyncio
-async def test_listener_processes_real_mock_chain_events(mock_chain):
+async def test_listener_processes_real_mock_chain_events(mock_chain: tuple[Web3, Any, Any]) -> None:
     web3, task_manager, escrow = mock_chain
     description_hash = web3.keccak(text="linear-model")
     deadline = int(time.time()) + 3600
     bounty = web3.to_wei(1, "ether")
-    created_receipt = web3.eth.wait_for_transaction_receipt(
+    created_receipt: Any = web3.eth.wait_for_transaction_receipt(
         task_manager.functions.createTask(description_hash, deadline, bounty).transact()
     )
     created_event = task_manager.events.TaskCreated().process_receipt(created_receipt)[0]["args"]
     task_id = created_event["taskId"]
-    funded_receipt = web3.eth.wait_for_transaction_receipt(
+    funded_receipt: Any = web3.eth.wait_for_transaction_receipt(
         escrow.functions.fundTask(task_id).transact({"value": bounty})
     )
     dispatches = []

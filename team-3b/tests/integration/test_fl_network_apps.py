@@ -5,8 +5,11 @@ The SuperLink runtime itself is a deployment concern documented in
 docs/FEDERATED_LEARNING.md and cannot be exercised in-process.
 """
 
+from typing import Any, cast
+
 import fakeredis
 import pytest
+from flwr.common import Context
 
 import federated_learning.server_app as server_app
 from common.models import RoundProvenance
@@ -14,39 +17,43 @@ from federated_learning.strategies import ProvenanceStrategy
 
 
 class _Context:
-    def __init__(self, run_config=None, node_config=None):
+    def __init__(self, run_config: dict[str, Any] | None = None, node_config: dict[str, Any] | None = None) -> None:
         self.run_config = run_config or {}
         self.node_config = node_config or {}
 
 
-def test_client_app_builds_a_flower_client():
+def test_client_app_builds_a_flower_client() -> None:
     from federated_learning.client_app import client_fn
 
-    client = client_fn(_Context(node_config={"partition-id": 1, "num-partitions": 3}))
+    client = client_fn(cast(Context, _Context(node_config={"partition-id": 1, "num-partitions": 3})))
 
     assert client is not None
 
 
-def test_server_app_builds_components_with_provenance(monkeypatch):
+def test_server_app_builds_components_with_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379")
 
     components = server_app.server_fn(
-        _Context(run_config={"task-id": "net", "num-clients": 3, "num-rounds": 2, "strategy": "fedtrimmedavg"})
+        cast(
+            Context,
+            _Context(run_config={"task-id": "net", "num-clients": 3, "num-rounds": 2, "strategy": "fedtrimmedavg"}),
+        )
     )
 
     assert isinstance(components.strategy, ProvenanceStrategy)
     assert components.strategy.strategy_name == "fedtrimmedavg"
+    assert components.config is not None
     assert components.config.num_rounds == 2
 
 
-def test_server_app_rejects_unknown_strategy(monkeypatch):
+def test_server_app_rejects_unknown_strategy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379")
 
     with pytest.raises(ValueError, match="Unknown aggregation strategy"):
-        server_app.server_fn(_Context(run_config={"strategy": "not-a-strategy"}))
+        server_app.server_fn(cast(Context, _Context(run_config={"strategy": "not-a-strategy"})))
 
 
-def test_redis_recorder_persists_provenance(monkeypatch):
+def test_redis_recorder_persists_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = fakeredis.FakeRedis()
     monkeypatch.setattr(server_app.sync_redis.Redis, "from_url", lambda url: fake)
 
@@ -61,5 +68,5 @@ def test_redis_recorder_persists_provenance(monkeypatch):
         )
     )
 
-    stored = fake.lrange("fl:provenance:recorder-task", 0, -1)
+    stored = cast(list[bytes], fake.lrange("fl:provenance:recorder-task", 0, -1))
     assert len(stored) == 1

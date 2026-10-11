@@ -31,8 +31,10 @@ import asyncio
 import hashlib
 import os
 import time
+from typing import Any
 
 import redis.asyncio as redis
+from flwr.common import NDArrays, Scalar
 
 from common.interfaces import StorageBackend
 from common.model_registry import ModelRegistry
@@ -62,11 +64,13 @@ class InMemoryStorage(StorageBackend):
 class SlowRegressionClient(RegressionClient):
     """A real client that spends ``delay`` seconds per round, to widen the crash window."""
 
-    def __init__(self, *args, delay: float = 0.0, **kwargs):
+    def __init__(self, *args: Any, delay: float = 0.0, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.delay = delay
 
-    def fit(self, parameters, config):
+    def fit(
+        self, parameters: NDArrays, config: dict[str, Scalar]
+    ) -> tuple[NDArrays, int, dict[str, Scalar]]:
         time.sleep(self.delay)
         return super().fit(parameters, config)
 

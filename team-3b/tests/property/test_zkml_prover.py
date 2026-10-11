@@ -28,7 +28,7 @@ def make_receipt(model_id: str, model_cid: str, output: bytes) -> ExecutionRecei
 
 
 @pytest.fixture
-def registry_and_storage():
+def registry_and_storage() -> tuple[ModelRegistry, MockStorageBackend]:
     redis_client = fakeredis.FakeRedis(decode_responses=False)
     storage = MockStorageBackend()
     return ModelRegistry(redis_client, storage), storage
@@ -37,7 +37,11 @@ def registry_and_storage():
 @settings(max_examples=8, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(architecture=st.sampled_from(SUPPORTED_ARCHITECTURES), output=st.binary(min_size=1, max_size=128))
 @pytest.mark.asyncio
-async def test_property_6_supported_receipts_generate_and_verify(architecture, output, registry_and_storage):
+async def test_property_6_supported_receipts_generate_and_verify(
+    architecture: str,
+    output: bytes,
+    registry_and_storage: tuple[ModelRegistry, MockStorageBackend],
+) -> None:
     registry, storage = registry_and_storage
     model_binary = (architecture + "-private-weights").encode()
     cid = await storage.upload(model_binary)
@@ -53,7 +57,9 @@ async def test_property_6_supported_receipts_generate_and_verify(architecture, o
 
 
 @pytest.mark.asyncio
-async def test_property_6_tampered_public_input_fails_independent_verifier(registry_and_storage):
+async def test_property_6_tampered_public_input_fails_independent_verifier(
+    registry_and_storage: tuple[ModelRegistry, MockStorageBackend],
+) -> None:
     registry, storage = registry_and_storage
     model_binary = b"linear-private-weights"
     cid = await storage.upload(model_binary)
@@ -70,7 +76,9 @@ async def test_property_6_tampered_public_input_fails_independent_verifier(regis
 
 
 @pytest.mark.asyncio
-async def test_property_7_proof_size_is_constant_and_weights_do_not_leak(registry_and_storage):
+async def test_property_7_proof_size_is_constant_and_weights_do_not_leak(
+    registry_and_storage: tuple[ModelRegistry, MockStorageBackend],
+) -> None:
     registry, storage = registry_and_storage
     small_weights = b"tiny-secret-linear-weights"
     large_weights = b"large-secret-mlp-weights" * 100
@@ -103,7 +111,9 @@ async def test_property_7_proof_size_is_constant_and_weights_do_not_leak(registr
 
 
 @pytest.mark.asyncio
-async def test_property_8_unsupported_architecture_lists_complete_supported_set(registry_and_storage):
+async def test_property_8_unsupported_architecture_lists_complete_supported_set(
+    registry_and_storage: tuple[ModelRegistry, MockStorageBackend],
+) -> None:
     registry, storage = registry_and_storage
     model_binary = b"unsupported-weights"
     cid = await storage.upload(model_binary)

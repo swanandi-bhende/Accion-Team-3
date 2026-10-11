@@ -1,4 +1,6 @@
+from collections.abc import Callable
 from types import SimpleNamespace
+from typing import Any
 
 import fakeredis.aioredis as fakeredis
 import pytest
@@ -9,34 +11,40 @@ from event_listener.listener import EventListener
 
 
 class FakeFilter:
-    def __init__(self, events):
+    def __init__(self, events: list[dict[str, Any]]) -> None:
         self.events = events
 
-    def get_all_entries(self):
+    def get_all_entries(self) -> list[dict[str, Any]]:
         return list(self.events)
 
 
 class FakeEventFactory:
-    def __init__(self, events):
+    def __init__(self, events: list[dict[str, Any]]) -> None:
         self.events = events
 
-    def create_filter(self, **kwargs):
+    def create_filter(self, **kwargs: Any) -> FakeFilter:
         return FakeFilter(self.events)
 
 
 class FakeContract:
-    def __init__(self, created=None, funded=None):
+    def __init__(self, created: list[dict[str, Any]] | None = None, funded: list[dict[str, Any]] | None = None) -> None:
         self.events = SimpleNamespace(
             TaskCreated=FakeEventFactory(created or []),
             TaskFunded=FakeEventFactory(funded or []),
         )
 
 
-def event(args, block_number):
+def event(args: dict[str, Any], block_number: int) -> dict[str, Any]:
     return {"args": args, "blockNumber": block_number}
 
 
-def listener(created=None, funded=None, now=1000.0, dispatch=None, redis=None):
+def listener(
+    created: list[dict[str, Any]] | None = None,
+    funded: list[dict[str, Any]] | None = None,
+    now: float = 1000.0,
+    dispatch: Callable[[dict[str, Any]], Any] | None = None,
+    redis: fakeredis.FakeRedis | None = None,
+) -> EventListener:
     return EventListener(
         web3=SimpleNamespace(),
         task_manager=FakeContract(created=created),
@@ -54,7 +62,7 @@ def listener(created=None, funded=None, now=1000.0, dispatch=None, redis=None):
     bounty=st.integers(min_value=0, max_value=10**18),
 )
 @pytest.mark.asyncio
-async def test_property_12_created_fields_are_extracted_exactly(description_hash, deadline, bounty):
+async def test_property_12_created_fields_are_extracted_exactly(description_hash: bytes, deadline: int, bounty: int) -> None:
     task_id = b"task-12"
     creator = "0x0000000000000000000000000000000000000001"
     created = event(
@@ -84,7 +92,7 @@ async def test_property_12_created_fields_are_extracted_exactly(description_hash
     ("has_created", "has_funded", "should_dispatch"),
     [(False, False, False), (True, False, False), (False, True, False), (True, True, True)],
 )
-async def test_property_13_dispatch_requires_both_events(has_created, has_funded, should_dispatch):
+async def test_property_13_dispatch_requires_both_events(has_created: bool, has_funded: bool, should_dispatch: bool) -> None:
     task_id = b"task-13"
     created = event(
         {
@@ -110,7 +118,7 @@ async def test_property_13_dispatch_requires_both_events(has_created, has_funded
 
 
 @pytest.mark.asyncio
-async def test_property_13_dispatch_is_idempotent():
+async def test_property_13_dispatch_is_idempotent() -> None:
     task_id = b"task-idempotent"
     created = event({"taskId": task_id, "creator": "c", "descriptionHash": b"d", "deadline": 5000, "bountyAmount": 1}, 1)
     funded = event({"taskId": task_id, "funder": "f", "fundedAmount": 1}, 2)
@@ -125,7 +133,7 @@ async def test_property_13_dispatch_is_idempotent():
 
 
 @pytest.mark.asyncio
-async def test_property_14_out_of_order_events_dispatch_once_after_restart():
+async def test_property_14_out_of_order_events_dispatch_once_after_restart() -> None:
     task_id = b"task-restart"
     created = event({"taskId": task_id, "creator": "c", "descriptionHash": b"d", "deadline": 5000, "bountyAmount": 1}, 2)
     funded = event({"taskId": task_id, "funder": "f", "fundedAmount": 1}, 1)
@@ -142,7 +150,7 @@ async def test_property_14_out_of_order_events_dispatch_once_after_restart():
 
 
 @pytest.mark.asyncio
-async def test_property_14_duplicate_event_at_new_block_does_not_dispatch_twice():
+async def test_property_14_duplicate_event_at_new_block_does_not_dispatch_twice() -> None:
     task_id = b"task-reorg"
     created = event({"taskId": task_id, "creator": "c", "descriptionHash": b"d", "deadline": 5000, "bountyAmount": 1}, 10)
     funded = event({"taskId": task_id, "funder": "f", "fundedAmount": 1}, 11)
@@ -162,7 +170,7 @@ async def test_property_14_duplicate_event_at_new_block_does_not_dispatch_twice(
 
 
 @pytest.mark.asyncio
-async def test_expired_created_event_never_enters_pending_state():
+async def test_expired_created_event_never_enters_pending_state() -> None:
     task_id = b"expired"
     created = event({"taskId": task_id, "creator": "c", "descriptionHash": b"d", "deadline": 1000, "bountyAmount": 1}, 3)
     listener_instance = listener(created=[created], now=1000.0)
@@ -173,18 +181,18 @@ async def test_expired_created_event_never_enters_pending_state():
 
 
 @pytest.mark.asyncio
-async def test_property_15_reconnect_backoff_caps_at_60_seconds():
+async def test_property_15_reconnect_backoff_caps_at_60_seconds() -> None:
     delays = []
     attempts = 0
 
-    async def connect():
+    async def connect() -> str:
         nonlocal attempts
         attempts += 1
         if attempts <= 8:
             raise ConnectionError("dropped")
         return "connected"
 
-    async def record_sleep(delay):
+    async def record_sleep(delay: float) -> None:
         delays.append(delay)
 
     listener_instance = listener()
@@ -195,7 +203,7 @@ async def test_property_15_reconnect_backoff_caps_at_60_seconds():
 
 
 @pytest.mark.asyncio
-async def test_burst_of_tasks_dispatches_all_tasks():
+async def test_burst_of_tasks_dispatches_all_tasks() -> None:
     created = []
     funded = []
     for index in range(20):
@@ -211,7 +219,7 @@ async def test_burst_of_tasks_dispatches_all_tasks():
 
 
 @pytest.mark.asyncio
-async def test_abandoned_pending_tasks_are_cleaned_up_after_ttl():
+async def test_abandoned_pending_tasks_are_cleaned_up_after_ttl() -> None:
     current_time = [4000.0]
     listener_instance = EventListener(
         web3=SimpleNamespace(),

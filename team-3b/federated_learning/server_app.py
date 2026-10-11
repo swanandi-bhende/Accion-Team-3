@@ -18,13 +18,15 @@ for tests; this module is for real remote participants.
 
 from __future__ import annotations
 
-import os
+from collections.abc import Callable
 from typing import Any
 
 import redis as sync_redis
+from flwr.common import Context
 from flwr.server import ServerAppComponents, ServerConfig
 from flwr.serverapp import ServerApp
 
+from common.config import get_settings
 from common.models import FLTaskConfig, RoundProvenance
 from federated_learning.strategies import ProvenanceStrategy, build_strategy
 
@@ -49,7 +51,9 @@ def load_task_config(run_config: dict[str, Any] | None = None) -> FLTaskConfig:
     )
 
 
-def build_redis_recorder(task_id: str, redis_url: str = DEFAULT_REDIS_URL):
+def build_redis_recorder(
+    task_id: str, redis_url: str = DEFAULT_REDIS_URL
+) -> Callable[[RoundProvenance], None]:
     """Return a synchronous callable that appends provenance records to Redis."""
     client = sync_redis.Redis.from_url(redis_url)
     key = f"fl:provenance:{task_id}"
@@ -60,12 +64,12 @@ def build_redis_recorder(task_id: str, redis_url: str = DEFAULT_REDIS_URL):
     return record
 
 
-def server_fn(context) -> ServerAppComponents:
+def server_fn(context: Context) -> ServerAppComponents:
     config = load_task_config(getattr(context, "run_config", None))
     strategy = ProvenanceStrategy(
         build_strategy(config),
         config.aggregation_strategy,
-        on_record=build_redis_recorder(config.task_id, os.environ.get("REDIS_URL", DEFAULT_REDIS_URL)),
+        on_record=build_redis_recorder(config.task_id, get_settings().redis_url or DEFAULT_REDIS_URL),
     )
     return ServerAppComponents(
         strategy=strategy,

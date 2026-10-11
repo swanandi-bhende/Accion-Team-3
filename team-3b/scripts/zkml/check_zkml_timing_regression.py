@@ -4,7 +4,7 @@ import json
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 RESULT_PATH = ROOT / "data" / "zkml_spike" / "benchmark_result.json"
 MAX_PROVE_SECONDS = 120.0
 MAX_TIME_DRIFT = 2.0

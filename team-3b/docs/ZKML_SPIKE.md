@@ -17,7 +17,7 @@ The real EZKL pipeline was run successfully against a tiny 2-layer ONNX MLP.
 Reproduce it with:
 
 ```text
-venv/bin/python scripts/ezkl_mlp_benchmark.py
+venv/bin/python scripts/zkml/ezkl_mlp_benchmark.py
 ```
 
 Measured with EZKL 23.0.5 on this Apple Silicon development machine:

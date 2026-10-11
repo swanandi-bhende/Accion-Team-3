@@ -151,7 +151,7 @@ blob whose plaintext does not match the expected model hash is refused with
 `IntegrityCheckFailedError`.
 
 Step 15.7 kills a *separate* process running `run_training` in the middle of a
-5-round job (via `scripts/fl_crash_harness.py`) and confirms the provenance for
+5-round job (via `scripts/fl/fl_crash_harness.py`) and confirms the provenance for
 the completed rounds is still in Redis and no model was registered, since the
 run never reached its final round. This tests the Step 14.5 incremental-write
 decision under a real failure instead of asserting the code mentions it.

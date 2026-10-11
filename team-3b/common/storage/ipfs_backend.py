@@ -16,7 +16,7 @@ class IPFSBackend(StorageBackend):
                 response = await client.post(url, files=files, timeout=30.0)
                 response.raise_for_status()
                 result = response.json()
-                return result["Hash"]
+                return str(result["Hash"])
         except httpx.RequestError as e:
             raise StorageUnavailableError(f"IPFS upload failed: {e}") from e
 

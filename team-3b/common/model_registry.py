@@ -1,5 +1,7 @@
 import asyncio
 import hashlib
+from collections.abc import Awaitable
+from typing import cast
 
 from redis.asyncio import Redis
 
@@ -27,7 +29,9 @@ class ModelRegistry:
         else:
             target_key = f"model:{model_id}:v{version}"
 
-        data = await self.redis.hgetall(target_key)
+        data = await cast(
+            Awaitable[dict[bytes | str, bytes | str]], self.redis.hgetall(target_key)
+        )
         if not data:
             return None
 
@@ -44,7 +48,7 @@ class ModelRegistry:
     async def _next_version(self, model_id: str) -> int:
         """Atomic counter for the next version using Redis INCR."""
         counter_key = f"model:{model_id}:version_counter"
-        return await self.redis.incr(counter_key)
+        return int(await self.redis.incr(counter_key))
 
     async def register(
         self,
@@ -52,7 +56,7 @@ class ModelRegistry:
         cid: str,
         model_binary: bytes,
         architecture: str | None = None,
-    ):
+    ) -> None:
         """Register model with CID after validating it resolves correctly."""
 
         try:

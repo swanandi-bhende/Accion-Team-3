@@ -11,10 +11,14 @@ import hashlib
 import json
 import subprocess
 import time
+from collections.abc import Callable, Generator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from web3 import Web3
+from web3.contract import Contract
+from web3.types import TxReceipt
 
 from common.interfaces import StorageBackend
 
@@ -56,16 +60,16 @@ def memory_storage() -> InMemoryStorage:
     return InMemoryStorage()
 
 
-def _deploy(web3: Web3, name: str):
+def _deploy(web3: Web3, name: str) -> Contract:
     artifact = json.loads((CONTRACTS / f"artifacts/contracts/{name}.sol/{name}.json").read_text())
     deployment = web3.eth.wait_for_transaction_receipt(
         web3.eth.contract(abi=artifact["abi"], bytecode=artifact["bytecode"]).constructor().transact()
     )
-    return web3.eth.contract(address=deployment.contractAddress, abi=artifact["abi"])
+    return cast(Contract, web3.eth.contract(address=deployment["contractAddress"], abi=artifact["abi"]))
 
 
 @pytest.fixture(scope="session")
-def hardhat_node():
+def hardhat_node() -> Generator[Web3, None, None]:
     """A local Hardhat node, reusing one already listening on 8545."""
     web3 = Web3(Web3.HTTPProvider(RPC_URL))
     process = None
@@ -90,17 +94,18 @@ def hardhat_node():
 
 
 @pytest.fixture(scope="module")
-def mock_chain(hardhat_node):
+def mock_chain(hardhat_node: Web3) -> tuple[Web3, Contract, Contract]:
     """``(web3, task_manager, escrow)`` with freshly deployed mock contracts."""
-    return hardhat_node, *(_deploy(hardhat_node, name) for name in CONTRACT_NAMES)
+    task_manager, escrow = (_deploy(hardhat_node, name) for name in CONTRACT_NAMES)
+    return hardhat_node, task_manager, escrow
 
 
 @pytest.fixture
-def create_funded_task(mock_chain):
+def create_funded_task(mock_chain: tuple[Web3, Contract, Contract]) -> Callable[..., tuple[Any, TxReceipt, TxReceipt]]:
     """Callable that posts ``TaskCreated`` then ``TaskFunded`` for one task."""
     web3, task_manager, escrow = mock_chain
 
-    def create_and_fund(description_hash: bytes, bounty_ether: int = 1):
+    def create_and_fund(description_hash: bytes, bounty_ether: int = 1) -> tuple[Any, TxReceipt, TxReceipt]:
         bounty = web3.to_wei(bounty_ether, "ether")
         deadline = int(time.time()) + 3600
         created = web3.eth.wait_for_transaction_receipt(

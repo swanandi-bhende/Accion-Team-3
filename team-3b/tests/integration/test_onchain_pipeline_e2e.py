@@ -5,9 +5,13 @@ pipeline test share one Hardhat session.
 """
 
 import time
+from collections.abc import Callable
+from typing import Any, cast
 
 import fakeredis.aioredis as fakeredis
 import pytest
+from eth_typing import HexStr
+from web3 import Web3
 
 from common.models import AttestationReport, ProofArtifact
 from event_listener.listener import EventListener
@@ -15,14 +19,17 @@ from proof_submitter import ProofSubmitter
 
 
 @pytest.mark.asyncio
-async def test_event_listener_to_proof_submitter_pipeline(mock_chain, create_funded_task):
+async def test_event_listener_to_proof_submitter_pipeline(
+    mock_chain: tuple[Web3, Any, Any],
+    create_funded_task: Callable[[bytes], tuple[Any, Any, Any]],
+) -> None:
     web3, task_manager, escrow = mock_chain
     redis = fakeredis.FakeRedis(decode_responses=False)
     description_hash = web3.keccak(text="pipeline-model")
     task_id, created_receipt, funded_receipt = create_funded_task(description_hash)
     submitter = ProofSubmitter(web3, task_manager, redis, batch_window=10.0)
 
-    async def dispatch(task):
+    async def dispatch(task: dict[str, Any]) -> None:
         attestation = AttestationReport(
             enclave_measurement="mock-measurement",
             signer_identity="mock-signer",
@@ -55,5 +62,6 @@ async def test_event_listener_to_proof_submitter_pipeline(mock_chain, create_fun
     assert submitter.buffered_task_ids() == []
     assert submitter.metrics["proofs_submitted"] == 1
     assert submitter.metrics["dlq_batches"] == 0
-    assert web3.eth.get_transaction_receipt(tx_hash).status == 1
+    assert tx_hash is not None
+    assert web3.eth.get_transaction_receipt(cast(HexStr, tx_hash))["status"] == 1
     assert await submitter.flush() is None

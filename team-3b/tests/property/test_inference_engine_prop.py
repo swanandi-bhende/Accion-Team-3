@@ -5,6 +5,7 @@ import fakeredis.aioredis as fakeredis
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from redis.asyncio import Redis
 
 from common.exceptions import ModelNotFoundError
 from common.model_registry import ModelRegistry
@@ -15,31 +16,37 @@ from tests.property.test_model_registry_prop import MockStorageBackend
 
 
 @pytest.fixture
-def redis_client():
+def redis_client() -> Redis:
     return fakeredis.FakeRedis(decode_responses=False)
 
 @pytest.fixture
-def storage():
+def storage() -> MockStorageBackend:
     return MockStorageBackend()
 
 @pytest.fixture
-def registry(redis_client, storage):
+def registry(redis_client: Redis, storage: MockStorageBackend) -> ModelRegistry:
     return ModelRegistry(redis_client, storage)
 
 @pytest.fixture
-def tee():
+def tee() -> TEERuntime:
     rt = TEERuntime("sgx")
     rt.initialize()
     return rt
 
 @pytest.fixture
-def engine(registry, tee, redis_client):
+def engine(registry: ModelRegistry, tee: TEERuntime, redis_client: Redis) -> InferenceEngine:
     return InferenceEngine(registry, tee, redis_client, timeout_s=5.0)
 
 @settings(max_examples=10, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(model_binary=st.binary(min_size=16, max_size=100), input_data=st.binary(min_size=1, max_size=100))
 @pytest.mark.asyncio
-async def test_property_1_execution_receipt(engine, registry, storage, model_binary, input_data):
+async def test_property_1_execution_receipt(
+    engine: InferenceEngine,
+    registry: ModelRegistry,
+    storage: MockStorageBackend,
+    model_binary: bytes,
+    input_data: bytes,
+) -> None:
     """Property 1: Valid inputs produce valid receipt with correct hashes."""
     # We must mock encryption for the TEE sim to decrypt properly.
     import os
@@ -71,7 +78,13 @@ async def test_property_1_execution_receipt(engine, registry, storage, model_bin
     input2=st.binary(min_size=1, max_size=100)
 )
 @pytest.mark.asyncio
-async def test_property_2_isolation_guarantees(engine, registry, storage, input1, input2):
+async def test_property_2_isolation_guarantees(
+    engine: InferenceEngine,
+    registry: ModelRegistry,
+    storage: MockStorageBackend,
+    input1: bytes,
+    input2: bytes,
+) -> None:
     """Property 2: Concurrent requests do not cross-contaminate."""
     # Register a generic mock model
     model_binary = b"concurrent_model_test"
@@ -94,9 +107,10 @@ async def test_property_2_isolation_guarantees(engine, registry, storage, input1
     second_started = asyncio.Event()
     release_first = asyncio.Event()
     call_count = 0
+    assert engine.tee.enclave is not None
     original_run_isolated = engine.tee.enclave.run_isolated
 
-    async def interleaved_run_isolated(model, input_data):
+    async def interleaved_run_isolated(model: bytes, input_data: bytes) -> bytes:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -107,7 +121,7 @@ async def test_property_2_isolation_guarantees(engine, registry, storage, input1
             second_started.set()
         return await original_run_isolated(model, input_data)
 
-    engine.tee.enclave.run_isolated = interleaved_run_isolated
+    engine.tee.enclave.run_isolated = interleaved_run_isolated  # type: ignore[method-assign]
 
     # Force request B to enter the enclave while request A is paused.
     task1 = asyncio.create_task(engine.execute(req1))
@@ -130,7 +144,7 @@ async def test_property_2_isolation_guarantees(engine, registry, storage, input1
 @settings(max_examples=10, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(model_id=st.text(min_size=1), input_data=st.binary(min_size=1))
 @pytest.mark.asyncio
-async def test_property_3_missing_model(engine, model_id, input_data):
+async def test_property_3_missing_model(engine: InferenceEngine, model_id: str, input_data: bytes) -> None:
     """Property 3: Missing model raises ModelNotFoundError and logs nothing."""
     req = InferenceRequest(model_id=model_id, input_data=input_data)
 

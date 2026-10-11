@@ -9,7 +9,7 @@ from event_listener.config import load_contract_abi
 from event_listener.listener import EventListener
 
 
-def make_listener(redis=None):
+def make_listener(redis: fakeredis.FakeRedis | None = None) -> EventListener:
     return EventListener(
         web3=SimpleNamespace(),
         task_manager=SimpleNamespace(),
@@ -18,7 +18,7 @@ def make_listener(redis=None):
     )
 
 
-def test_mock_contract_abis_load_from_hardhat_artifacts():
+def test_mock_contract_abis_load_from_hardhat_artifacts() -> None:
     task_abi = load_contract_abi("TaskManager")
     escrow_abi = load_contract_abi("Escrow")
 
@@ -27,7 +27,7 @@ def test_mock_contract_abis_load_from_hardhat_artifacts():
 
 
 @pytest.mark.asyncio
-async def test_task_state_survives_listener_restart():
+async def test_task_state_survives_listener_restart() -> None:
     redis = fakeredis.FakeRedis(decode_responses=False)
     first = make_listener(redis)
     first._task_events["task"] = {"funded": {"funded_amount": 1}}
@@ -41,7 +41,7 @@ async def test_task_state_survives_listener_restart():
 
 
 @pytest.mark.asyncio
-async def test_status_endpoint_reports_listener_state():
+async def test_status_endpoint_reports_listener_state() -> None:
     listener = make_listener()
     await listener._persist_block_number(42)
     listener._connection_state = "connected"

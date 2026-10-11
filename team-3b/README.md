@@ -36,7 +36,7 @@ coverage report. The review record and known limitations are in
 `docs/CHECKPOINTS.md`.
 
 Reproduce the real EZKL benchmark with `venv/bin/python
-scripts/ezkl_mlp_benchmark.py`. The measured result is written to
+scripts/zkml/ezkl_mlp_benchmark.py`. The measured result is written to
 `data/zkml_spike/benchmark_result.json`.
 
 ## Further Reading

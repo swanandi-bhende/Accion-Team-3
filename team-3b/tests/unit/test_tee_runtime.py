@@ -1,5 +1,6 @@
 import asyncio
 import os
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -8,7 +9,7 @@ from common.exceptions import TEEUnavailableError
 from inference.tee_runtime import TEERuntime
 
 
-def test_uninitialized_runtime_raises():
+def test_uninitialized_runtime_raises() -> None:
     rt = TEERuntime("sgx")
     # Don't call initialize()
 
@@ -16,13 +17,13 @@ def test_uninitialized_runtime_raises():
         rt.generate_attestation(b"in", b"out")
 
 @pytest.mark.asyncio
-async def test_uninitialized_execute_raises():
+async def test_uninitialized_execute_raises() -> None:
     rt = TEERuntime("sev")
     with pytest.raises(TEEUnavailableError):
         await rt.execute_inference(b"model", "hash", b"in", b"key")
 
 @pytest.mark.asyncio
-async def test_model_size_constraint():
+async def test_model_size_constraint() -> None:
     rt = TEERuntime("sgx")
     rt.initialize()
 
@@ -31,31 +32,33 @@ async def test_model_size_constraint():
     # Actually, allocating 500MB of zeros in python takes 500MB RAM.
     # To keep the test fast and lightweight, we mock len() or just allocate it since 500MB is fast.
     class LargeMockBytes:
-        def __len__(self):
+        def __len__(self) -> int:
             return 500 * 1024 * 1024 + 1
 
     with pytest.raises(ValueError, match="exceeds 500MB"):
-        await rt.execute_inference(LargeMockBytes(), "hash", b"in", b"key")
+        await rt.execute_inference(cast(bytes, LargeMockBytes()), "hash", b"in", b"key")
 
 
 @pytest.mark.asyncio
-async def test_model_exactly_at_500mb_boundary_is_accepted():
+async def test_model_exactly_at_500mb_boundary_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
     rt = TEERuntime("sgx")
     rt.initialize()
+    assert rt.enclave is not None
     model_binary = type("BoundaryModel", (), {
         "__len__": lambda self: 500 * 1024 * 1024,
     })()
-    rt.enclave.run_isolated = AsyncMock(return_value=b"boundary-output")
+    run_isolated = AsyncMock(return_value=b"boundary-output")
+    monkeypatch.setattr(rt.enclave, "run_isolated", run_isolated)
 
     with patch("inference.tee_runtime.hashlib.sha256") as sha256:
         sha256.return_value.hexdigest.return_value = "boundary-hash"
         output = await rt.execute_inference(model_binary, "boundary-hash", b"in", b"key")
 
     assert output == b"boundary-output"
-    rt.enclave.run_isolated.assert_awaited_once_with(model_binary, b"in")
+    run_isolated.assert_awaited_once_with(model_binary, b"in")
 
 @pytest.mark.asyncio
-async def test_concurrent_execute_isolation():
+async def test_concurrent_execute_isolation() -> None:
     rt = TEERuntime("sgx")
     rt.initialize()
 

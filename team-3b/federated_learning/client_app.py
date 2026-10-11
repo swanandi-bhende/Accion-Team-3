@@ -15,13 +15,13 @@ local data; the Flower client interface does not change.
 
 from __future__ import annotations
 
-from flwr.client import ClientApp
+from flwr.client import Client, ClientApp
 from flwr.common import Context
 
 from federated_learning.simulated_client import make_partitioned_client
 
 
-def client_fn(context: Context):
+def client_fn(context: Context) -> Client:
     node_config = getattr(context, "node_config", {}) or {}
     partition_id = int(node_config.get("partition-id", 0))
     num_partitions = int(node_config.get("num-partitions", 1))

@@ -4,18 +4,27 @@ import argparse
 import json
 import sys
 import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 import ezkl
 import numpy as np
 import onnx
 from onnx import TensorProto, helper, numpy_helper
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = ROOT / "data" / "zkml_spike"
 
 
-def save_model(path: Path, nodes, inputs, outputs, initializers, name: str) -> None:
+def save_model(
+    path: Path,
+    nodes: Sequence[onnx.NodeProto],
+    inputs: Sequence[onnx.ValueInfoProto],
+    outputs: Sequence[onnx.ValueInfoProto],
+    initializers: Sequence[onnx.TensorProto],
+    name: str,
+) -> None:
     graph = helper.make_graph(nodes, name, inputs, outputs, initializers)
     model = helper.make_model(
         graph,
@@ -109,7 +118,7 @@ def build_model(path: Path, architecture: str) -> None:
     )
 
 
-def timed(label: str, function, *args):
+def timed(label: str, function: Callable[..., Any], *args: Any) -> tuple[Any, float]:
     started = time.perf_counter()
     result = function(*args)
     return result, time.perf_counter() - started
@@ -130,7 +139,8 @@ def benchmark(architecture: str) -> dict:
 
     build_model(model_path, architecture)
     if architecture in {"cnn", "transformer_small"}:
-        ezkl.gen_random_data(str(model_path), str(data_path), seed=20260926, min=-1.0, max=1.0)
+        # The bundled ezkl stub omits gen_random_data; the installed ezkl 23 provides it.
+        ezkl.gen_random_data(str(model_path), str(data_path), seed=20260926, min=-1.0, max=1.0)  # type: ignore[attr-defined]
     else:
         input_data = [[1.0, 2.0]]
         data_path.write_text(json.dumps({"input_data": input_data}))

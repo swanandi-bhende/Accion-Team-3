@@ -1,3 +1,12 @@
+# Full stack for the Verifiable AI Execution subsystem.
+#
+#   docker compose up --build -d          # build, deploy the mock chain, start
+#   scripts/ops/smoke_test_compose.sh         # verify it actually works end to end
+#
+# Nothing has to be prepared by hand: the deploy step compiles and deploys the
+# stub contracts and publishes their addresses, and every service waits for its
+# dependencies to be *healthy* rather than merely started. See docs/DEPLOYMENT.md.
+
 services:
   redis:
     image: redis:7-alpine
@@ -10,6 +19,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    restart: unless-stopped
 
   ipfs:
     image: ipfs/kubo:latest
@@ -18,6 +28,13 @@ services:
       - "8080:8080"
     volumes:
       - ipfs_data:/export
+    healthcheck:
+      test: ["CMD", "ipfs", "id"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
 
   hardhat-node:
     image: node:20-alpine
@@ -28,6 +45,15 @@ services:
       sh -c "npm install && npx hardhat node --hostname 0.0.0.0"
     ports:
       - "8545:8545"
+    healthcheck:
+      # The JSON-RPC endpoint answering is the real readiness signal; the first
+      # `npm install` is why the start period is generous.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8545',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',method:'eth_chainId',params:[],id:1})}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+    restart: unless-stopped
 
   hardhat-deploy:
     image: node:20-alpine
@@ -36,31 +62,63 @@ services:
       - .:/app
     environment:
       - TRIGGER_MOCK_TASK=true
-      # The deploy container must reach the node *container*, not its own loopback.
+      # Inside this container 127.0.0.1 is the container itself, so the config
+      # points the `localhost` hardhat network at the node container.
       - WEB3_RPC_URL=http://hardhat-node:8545
-    # deploy_and_trigger.js waits for the chain itself, so no sleep-based race.
+    # node_modules come from the hardhat-node service above (same bind mount);
+    # deploy_and_trigger.js also waits for the RPC itself.
     command: >
-      sh -c "npm install && npx hardhat run scripts/deploy_and_trigger.js --network localhost"
+      sh -c "npx hardhat run scripts/deploy_and_trigger.js --network localhost"
     depends_on:
-      - hardhat-node
+      hardhat-node:
+        condition: service_healthy
+    restart: "no"
 
-  inference-engine:
-    build: 
+  # One-shot init service: registers the toy models so a fresh stack can serve
+  # inference without anyone running a seed script by hand.
+  seed-model:
+    build:
       context: .
       dockerfile: inference/Dockerfile
-    env_file:
-      - .env
+    command: ["python", "scripts/ops/seed_model_registry.py"]
     environment:
-      - TEE_MODE=sgx
       - REDIS_URL=redis://redis:6379
       - MODEL_STORAGE_URL=http://ipfs:5001
-    ports:
-      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
     depends_on:
       redis:
         condition: service_healthy
       ipfs:
-        condition: service_started
+        condition: service_healthy
+    restart: "no"
+
+  inference-engine:
+    build:
+      context: .
+      dockerfile: inference/Dockerfile
+    environment:
+      - TEE_MODE=sgx
+      - REDIS_URL=redis://redis:6379
+      - MODEL_STORAGE_URL=http://ipfs:5001
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    depends_on:
+      redis:
+        condition: service_healthy
+      ipfs:
+        condition: service_healthy
+    restart: unless-stopped
 
   event-listener:
     build:
@@ -72,31 +130,45 @@ services:
       # itself; the listener polls the node over the compose network instead.
       - WEB3_RPC_URL=http://hardhat-node:8545
       - REDIS_URL=redis://redis:6379
+      # The deploy step owns the addresses; reading them from its output file is
+      # what makes the very first `up` work without recreating this container.
+      - MOCK_DEPLOYMENTS_PATH=/app/mocks/contracts/deployments/localhost.json
     volumes:
-      # Contract ABIs are git-ignored build output that hardhat-deploy writes
-      # into this checkout; the service reads them at startup.
+      # Contract ABIs are git-ignored build output that hardhat-deploy writes into
+      # this checkout; the service reads them at startup.
       - ./mocks:/app/mocks:ro
     # `.env` carries the deployment addresses; the generated, git-ignored
-    # `.env.mock` is listed last so the local mock chain overrides them. See
-    # docs/DEV_SETUP.md.
+    # `.env.mock` is listed last so the local mock chain overrides them.
     env_file:
       - path: .env
         required: false
       - path: .env.mock
         required: false
+    healthcheck:
+      # This is a worker, not a web server: reaching its state store is liveness.
+      test: ["CMD", "python", "-c", "import os, redis; redis.Redis.from_url(os.environ['REDIS_URL']).ping()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
       redis:
         condition: service_healthy
       hardhat-deploy:
         condition: service_completed_successfully
+    restart: unless-stopped
 
   proof-submitter:
     build:
       context: .
       dockerfile: proof_submitter/Dockerfile
+      args:
+        # Enable only where an EZKL wheel exists for the platform.
+        INSTALL_ZKML: "false"
     environment:
       - WEB3_RPC_URL=http://hardhat-node:8545
       - REDIS_URL=redis://redis:6379
+      - MOCK_DEPLOYMENTS_PATH=/app/mocks/contracts/deployments/localhost.json
     volumes:
       # Same compile-time ABI dependency as event-listener.
       - ./mocks:/app/mocks:ro
@@ -106,11 +178,19 @@ services:
         required: false
       - path: .env.mock
         required: false
+    healthcheck:
+      # A settlement worker needs both its queue and its chain connection.
+      test: ["CMD", "python", "-c", "import os, redis; from web3 import Web3; redis.Redis.from_url(os.environ['REDIS_URL']).ping(); assert Web3(Web3.HTTPProvider(os.environ['WEB3_RPC_URL'])).is_connected()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
       redis:
         condition: service_healthy
       hardhat-deploy:
         condition: service_completed_successfully
+    restart: unless-stopped
 
   verification-api:
     build:
@@ -118,14 +198,25 @@ services:
       dockerfile: verification/Dockerfile
     environment:
       - MODEL_STORAGE_URL=http://ipfs:5001
+    env_file:
+      - path: .env
+        required: false
     ports:
       - "8001:8001"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     depends_on:
-      redis:
-        condition: service_healthy
       ipfs:
-        condition: service_started
+        condition: service_healthy
+    restart: unless-stopped
 
+  # One-shot training job: runs the configured federated-learning rounds, stores
+  # the resulting model, and exits 0. The long-lived gRPC/SuperLink entrypoint for
+  # real multi-process runs is federated_learning/network_runner.py.
   fl-orchestrator:
     build:
       context: .
@@ -136,11 +227,15 @@ services:
       - FL_NUM_CLIENTS=3
       - FL_NUM_ROUNDS=3
       - FL_MODEL_ID=fl-demo-model
+    env_file:
+      - path: .env
+        required: false
     depends_on:
       redis:
         condition: service_healthy
       ipfs:
-        condition: service_started
+        condition: service_healthy
+    restart: "no"
 
 volumes:
   redis_data:

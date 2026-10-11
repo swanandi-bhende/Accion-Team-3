@@ -43,7 +43,7 @@ from common.exceptions import (
 )
 from common.interfaces import StorageBackend
 from common.model_registry import ModelRegistry
-from common.models import InferenceRequest, VerificationRequest
+from common.models import ExecutionReceipt, InferenceRequest, VerificationRequest
 from common.storage.ipfs_backend import IPFSBackend
 from event_listener.config import load_contract_abi
 from event_listener.listener import EventListener
@@ -256,7 +256,8 @@ class Pipeline:
 
     async def flush_submission(self) -> str | None:
         """Force out every proof buffered by the submitter. Returns the tx hash."""
-        return await self.submitter.flush()
+        tx_hash: str | None = await self.submitter.flush()
+        return tx_hash
 
     # ------------------------------------------------------------------ #
     # The per-task stage chain
@@ -332,7 +333,7 @@ class Pipeline:
 
     async def _run_inference(
         self, request: InferenceRequest, task_id: str
-    ) -> tuple[Any, float]:
+    ) -> tuple[ExecutionReceipt, float]:
         """Stage 1/2: TEE-backed inference, bounded and retried on infrastructure faults."""
         attempt = 0
         while True:
@@ -435,7 +436,9 @@ class Pipeline:
             return buffered_s, None, None
         return (buffered_s, *await self._settle(pending, task_id, execution_id))
 
-    async def _settle(self, pending: Any, task_id: str, execution_id: str):
+    async def _settle(
+        self, pending: Any, task_id: str, execution_id: str
+    ) -> tuple[float | None, str | None]:
         """Flush this task's batch and report whether it reached the chain."""
         async with self._flush_lock:
             if task_id not in self.submitter.buffered_task_ids():
@@ -488,7 +491,7 @@ class Pipeline:
                 execution_id,
                 response.reason_code,
             )
-        return response.result
+        return bool(response.result)
 
     # ------------------------------------------------------------------ #
     # Observability
@@ -581,7 +584,7 @@ def build_pipeline(settings: Settings | None = None, **overrides: Any) -> Pipeli
     storage = IPFSBackend(node_url=settings.model_storage_url or "http://localhost:5001")
     registry = ModelRegistry(redis_client, storage)
 
-    tee = TEERuntime(settings.tee_mode)
+    tee = TEERuntime(settings.tee_mode or "")
     tee.initialize()
     engine = InferenceEngine(
         registry, tee, redis_client, timeout_s=settings.tee_inference_timeout_s
@@ -590,11 +593,11 @@ def build_pipeline(settings: Settings | None = None, **overrides: Any) -> Pipeli
 
     web3 = Web3(Web3.HTTPProvider(settings.web3_rpc_url))
     task_manager = web3.eth.contract(
-        address=web3.to_checksum_address(settings.task_manager_address),
+        address=web3.to_checksum_address(settings.task_manager_address or ""),
         abi=load_contract_abi("TaskManager"),
     )
     escrow = web3.eth.contract(
-        address=web3.to_checksum_address(settings.escrow_address),
+        address=web3.to_checksum_address(settings.escrow_address or ""),
         abi=load_contract_abi("Escrow"),
     )
     submitter = ProofSubmitter(

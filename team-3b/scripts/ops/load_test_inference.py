@@ -6,9 +6,11 @@ import time
 from httpx import AsyncClient
 
 # This script is meant to be run against the live docker-compose stack
-# python scripts/load_test_inference.py --url http://localhost:8000
+# python scripts/ops/load_test_inference.py --url http://localhost:8000
 
-async def fire_request(client: AsyncClient, url: str, model_id: str, payload_bytes: bytes, req_id: int):
+async def fire_request(
+    client: AsyncClient, url: str, model_id: str, payload_bytes: bytes, req_id: int
+) -> tuple[int, int | str, float]:
     payload = {
         "model_id": model_id,
         "input_data": base64.b64encode(payload_bytes).decode('utf-8'),
@@ -24,7 +26,7 @@ async def fire_request(client: AsyncClient, url: str, model_id: str, payload_byt
         duration = time.time() - start_time
         return req_id, str(e), duration
 
-async def main():
+async def main() -> None:
     parser = argparse.ArgumentParser(description="Load Test Inference Engine")
     parser.add_argument("--url", type=str, default="http://localhost:8000", help="API Base URL")
     parser.add_argument("--concurrency", type=int, default=50, help="Number of concurrent requests")
@@ -32,7 +34,7 @@ async def main():
 
     print(f"Starting Load Test against {args.url} with {args.concurrency} concurrent requests.")
 
-    # We assume 'toy_linear' is seeded by scripts/seed_model_registry.py
+    # We assume 'toy_linear' is seeded by scripts/ops/seed_model_registry.py
     # Some requests will use a valid model, some an invalid one to test isolation
 
     async with AsyncClient() as client:

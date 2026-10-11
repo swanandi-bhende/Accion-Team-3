@@ -18,16 +18,20 @@ import base64
 import hashlib
 import json
 import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any, NoReturn, cast
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from common.constants import SUPPORTED_VERIFICATION_FORMATS, TEE_ATTESTATION_EXPIRY_S
 from common.exceptions import UnsupportedFormatError
 from common.interfaces import StorageBackend
-from common.models import AttestationReport, VerificationRequest
+from common.models import AttestationReport, VerificationRequest, VerificationResponse
 from inference.enclave_sim import EnclaveSim
 from verification.app import create_app, create_default_app
 from verification.interface import VerificationInterface
@@ -44,6 +48,8 @@ ZKML_ARCHITECTURE = "transformer_small"
 LATENCY_BUDGET_S = 5.0
 TEE_ONLY_REASON_CODES = {"invalid_signature", "expired_attestation"}
 
+CaseBuilder = Callable[[], tuple[VerificationInterface, dict[str, str], bytes]]
+
 
 # --------------------------------------------------------------------------- #
 # Reference backend, interface and proof fixtures
@@ -52,7 +58,7 @@ TEE_ONLY_REASON_CODES = {"invalid_signature", "expired_attestation"}
 class InMemoryStorage(StorageBackend):
     """A real ``StorageBackend`` so reference resolution is genuinely exercised."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._objects: dict[str, bytes] = {}
         self.retrieve_calls = 0
 
@@ -68,7 +74,9 @@ class InMemoryStorage(StorageBackend):
         return self._objects[cid]
 
 
-def _build_interface(storage: StorageBackend | None = None):
+def _build_interface(
+    storage: StorageBackend | None = None,
+) -> tuple[VerificationInterface, ConcreteTEEVerifier, StorageBackend]:
     storage = storage if storage is not None else InMemoryStorage()
     tee_verifier = ConcreteTEEVerifier(trusted_public_keys={})
     resolver = StorageProofResolver(storage=storage)
@@ -76,7 +84,9 @@ def _build_interface(storage: StorageBackend | None = None):
     return interface, tee_verifier, storage
 
 
-def _tee_proof(expired: bool = False, corrupt_signature: bool = False):
+def _tee_proof(
+    expired: bool = False, corrupt_signature: bool = False
+) -> tuple[bytes, dict[str, str], EnclaveSim]:
     """Mint a fresh simulated attestation plus the data needed to verify it."""
     enclave = EnclaveSim()
     input_hash, output_hash = "input_hash_1", "output_hash_1"
@@ -97,7 +107,7 @@ def _tee_proof(expired: bool = False, corrupt_signature: bool = False):
     return proof_bytes, {"input_hash": input_hash, "output_hash": output_hash}, enclave
 
 
-def _zkml_proof():
+def _zkml_proof() -> tuple[bytes, dict[str, str]]:
     public_inputs = {
         "input_hash": "input_hash_1",
         "output_hash": "output_hash_1",
@@ -122,7 +132,14 @@ def _trust(tee_verifier: ConcreteTEEVerifier, enclave: EnclaveSim) -> None:
     tee_verifier.trusted_public_keys[enclave.signer_id] = enclave.public_key_bytes
 
 
-async def _verify(interface, proof_format, public_inputs, *, proof_bytes=None, proof_reference=None):
+async def _verify(
+    interface: VerificationInterface,
+    proof_format: str,
+    public_inputs: dict[str, str],
+    *,
+    proof_bytes: bytes | None = None,
+    proof_reference: str | None = None,
+) -> tuple[VerificationResponse, float]:
     request = VerificationRequest(
         proof_format=proof_format,
         public_inputs=public_inputs,
@@ -134,7 +151,7 @@ async def _verify(interface, proof_format, public_inputs, *, proof_bytes=None, p
     return response, time.perf_counter() - started
 
 
-def _assert_equivalent(left, right) -> None:
+def _assert_equivalent(left: VerificationResponse, right: VerificationResponse) -> None:
     """Property 22 assertion: the two modes agree field-for-field."""
     assert left.result == right.result
     assert left.public_inputs == right.public_inputs
@@ -145,46 +162,46 @@ def _assert_equivalent(left, right) -> None:
 # Property 21 - one dedicated case per reason code (13.2), both formats (13.3)
 # --------------------------------------------------------------------------- #
 
-def _case_tee_wrong_signing_key():
+def _case_tee_wrong_signing_key() -> tuple[VerificationInterface, dict[str, str], bytes]:
     proof_bytes, public_inputs, enclave = _tee_proof()
     interface, tee_verifier, _ = _build_interface()
     tee_verifier.trusted_public_keys[enclave.signer_id] = EnclaveSim().public_key_bytes
     return interface, public_inputs, proof_bytes
 
 
-def _case_tee_corrupt_signature():
+def _case_tee_corrupt_signature() -> tuple[VerificationInterface, dict[str, str], bytes]:
     proof_bytes, public_inputs, enclave = _tee_proof(corrupt_signature=True)
     interface, tee_verifier, _ = _build_interface()
     _trust(tee_verifier, enclave)
     return interface, public_inputs, proof_bytes
 
 
-def _case_tee_expired():
+def _case_tee_expired() -> tuple[VerificationInterface, dict[str, str], bytes]:
     proof_bytes, public_inputs, enclave = _tee_proof(expired=True)
     interface, tee_verifier, _ = _build_interface()
     _trust(tee_verifier, enclave)
     return interface, public_inputs, proof_bytes
 
 
-def _case_tee_mismatch():
+def _case_tee_mismatch() -> tuple[VerificationInterface, dict[str, str], bytes]:
     proof_bytes, public_inputs, enclave = _tee_proof()
     interface, tee_verifier, _ = _build_interface()
     _trust(tee_verifier, enclave)
     return interface, {**public_inputs, "output_hash": "tampered_output"}, proof_bytes
 
 
-def _case_tee_malformed():
+def _case_tee_malformed() -> tuple[VerificationInterface, dict[str, str], bytes]:
     interface, _, _ = _build_interface()
     return interface, {"input_hash": "x", "output_hash": "y"}, b"not-a-json-attestation"
 
 
-def _case_zkml_mismatch():
+def _case_zkml_mismatch() -> tuple[VerificationInterface, dict[str, str], bytes]:
     proof_bytes, public_inputs = _zkml_proof()
     interface, _, _ = _build_interface()
     return interface, {**public_inputs, "output_hash": "tampered_output"}, proof_bytes
 
 
-def _case_zkml_malformed():
+def _case_zkml_malformed() -> tuple[VerificationInterface, dict[str, str], bytes]:
     interface, _, _ = _build_interface()
     return interface, {"input_hash": "x", "output_hash": "y"}, b"{not valid json"
 
@@ -202,7 +219,7 @@ REASON_CODE_CASES = [
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("proof_format", [TEE_FORMAT, ZKML_FORMAT])
-async def test_property_21_valid_proof_verifies(proof_format):
+async def test_property_21_valid_proof_verifies(proof_format: str) -> None:
     interface, tee_verifier, _ = _build_interface()
     if proof_format == TEE_FORMAT:
         proof_bytes, public_inputs, enclave = _tee_proof()
@@ -220,7 +237,9 @@ async def test_property_21_valid_proof_verifies(proof_format):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("proof_format, expected_reason, case_builder", REASON_CODE_CASES)
-async def test_property_21_exact_reason_code_per_failure(proof_format, expected_reason, case_builder):
+async def test_property_21_exact_reason_code_per_failure(
+    proof_format: str, expected_reason: str, case_builder: CaseBuilder
+) -> None:
     interface, public_inputs, proof_bytes = case_builder()
 
     response, elapsed = await _verify(interface, proof_format, public_inputs, proof_bytes=proof_bytes)
@@ -232,7 +251,7 @@ async def test_property_21_exact_reason_code_per_failure(proof_format, expected_
 
 
 @pytest.mark.asyncio
-async def test_property_21_zkml_never_reuses_tee_reason_codes():
+async def test_property_21_zkml_never_reuses_tee_reason_codes() -> None:
     proof_bytes, public_inputs = _zkml_proof()
     interface, _, _ = _build_interface()
 
@@ -246,7 +265,7 @@ async def test_property_21_zkml_never_reuses_tee_reason_codes():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("proof_format", [TEE_FORMAT, ZKML_FORMAT])
-async def test_property_21_missing_proof_is_malformed(proof_format):
+async def test_property_21_missing_proof_is_malformed(proof_format: str) -> None:
     interface, _, _ = _build_interface()
 
     response, elapsed = await _verify(interface, proof_format, {"input_hash": "x"})
@@ -257,7 +276,7 @@ async def test_property_21_missing_proof_is_malformed(proof_format):
 
 
 @pytest.mark.asyncio
-async def test_property_21_reference_without_resolver_is_malformed():
+async def test_property_21_reference_without_resolver_is_malformed() -> None:
     interface = VerificationInterface(
         ConcreteTEEVerifier(trusted_public_keys={}), ConcreteZkMLVerifier(), resolver=None
     )
@@ -274,7 +293,7 @@ async def test_property_21_reference_without_resolver_is_malformed():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("proof_format", [TEE_FORMAT, ZKML_FORMAT])
-async def test_property_22_by_reference_matches_by_value(proof_format):
+async def test_property_22_by_reference_matches_by_value(proof_format: str) -> None:
     storage = InMemoryStorage()
     interface, tee_verifier, _ = _build_interface(storage)
     if proof_format == TEE_FORMAT:
@@ -300,7 +319,7 @@ async def test_property_22_by_reference_matches_by_value(proof_format):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("proof_format", [TEE_FORMAT, ZKML_FORMAT])
-async def test_property_22_tampered_inputs_fail_identically(proof_format):
+async def test_property_22_tampered_inputs_fail_identically(proof_format: str) -> None:
     storage = InMemoryStorage()
     interface, tee_verifier, _ = _build_interface(storage)
     if proof_format == TEE_FORMAT:
@@ -321,7 +340,7 @@ async def test_property_22_tampered_inputs_fail_identically(proof_format):
 
 
 @pytest.mark.asyncio
-async def test_property_22_unresolved_reference_is_malformed():
+async def test_property_22_unresolved_reference_is_malformed() -> None:
     interface, _, _ = _build_interface(InMemoryStorage())
 
     response, elapsed = await _verify(interface, TEE_FORMAT, {"input_hash": "x"}, proof_reference="QmMissingCid")
@@ -336,31 +355,31 @@ class _FakeFunction:
 
 
 class _FakeContract:
-    def __init__(self, arguments):
+    def __init__(self, arguments: dict[str, list[bytes]]) -> None:
         self._arguments = arguments
 
-    def decode_function_input(self, _data):
+    def decode_function_input(self, _data: bytes) -> tuple[_FakeFunction, dict[str, list[bytes]]]:
         return _FakeFunction(), self._arguments
 
 
 class _FakeEth:
-    def __init__(self, transaction):
+    def __init__(self, transaction: dict[str, bytes]) -> None:
         self._transaction = transaction
 
-    def get_transaction_receipt(self, _reference):
+    def get_transaction_receipt(self, _reference: str) -> dict[str, int]:
         return {"status": 1}
 
-    def get_transaction(self, _reference):
+    def get_transaction(self, _reference: str) -> dict[str, bytes]:
         return self._transaction
 
 
 class _FakeWeb3:
-    def __init__(self, transaction):
+    def __init__(self, transaction: dict[str, bytes]) -> None:
         self.eth = _FakeEth(transaction)
 
 
 @pytest.mark.asyncio
-async def test_property_22_transaction_reference_matches_resolved_value():
+async def test_property_22_transaction_reference_matches_resolved_value() -> None:
     resolver = StorageProofResolver(
         storage=InMemoryStorage(),
         web3=_FakeWeb3({"input": b"\x00"}),
@@ -381,7 +400,7 @@ async def test_property_22_transaction_reference_matches_resolved_value():
 
 
 @pytest.mark.asyncio
-async def test_property_22_unsupported_reference_is_rejected():
+async def test_property_22_unsupported_reference_is_rejected() -> None:
     resolver = StorageProofResolver(storage=InMemoryStorage())
 
     with pytest.raises(ProofResolutionError):
@@ -389,7 +408,7 @@ async def test_property_22_unsupported_reference_is_rejected():
 
 
 @pytest.mark.asyncio
-async def test_property_22_unknown_transaction_is_rejected():
+async def test_property_22_unknown_transaction_is_rejected() -> None:
     resolver = StorageProofResolver(
         storage=InMemoryStorage(),
         web3=_FakeWeb3({"input": b"\x00"}),
@@ -402,7 +421,7 @@ async def test_property_22_unknown_transaction_is_rejected():
 
 
 @pytest.mark.asyncio
-async def test_property_22_transaction_without_decoder_is_rejected():
+async def test_property_22_transaction_without_decoder_is_rejected() -> None:
     resolver = StorageProofResolver(
         storage=InMemoryStorage(), web3=_FakeWeb3({"input": b"\x00"}), contract=None
     )
@@ -412,12 +431,12 @@ async def test_property_22_transaction_without_decoder_is_rejected():
 
 
 @pytest.mark.asyncio
-async def test_property_22_non_submitproofs_transaction_is_rejected():
+async def test_property_22_non_submitproofs_transaction_is_rejected() -> None:
     class _WrongFunction:
         fn_name = "somethingElse"
 
     class _WrongContract:
-        def decode_function_input(self, _data):
+        def decode_function_input(self, _data: bytes) -> tuple[_WrongFunction, dict[str, list[bytes]]]:
             return _WrongFunction(), {}
 
     resolver = StorageProofResolver(
@@ -429,9 +448,9 @@ async def test_property_22_non_submitproofs_transaction_is_rejected():
 
 
 @pytest.mark.asyncio
-async def test_property_22_undecodable_transaction_is_rejected():
+async def test_property_22_undecodable_transaction_is_rejected() -> None:
     class _BrokenContract:
-        def decode_function_input(self, _data):
+        def decode_function_input(self, _data: bytes) -> NoReturn:
             raise ValueError("bad payload")
 
     resolver = StorageProofResolver(
@@ -443,7 +462,7 @@ async def test_property_22_undecodable_transaction_is_rejected():
 
 
 @pytest.mark.asyncio
-async def test_property_22_transaction_lookup_failure_is_rejected():
+async def test_property_22_transaction_lookup_failure_is_rejected() -> None:
     resolver = StorageProofResolver(
         storage=InMemoryStorage(),
         web3=_FakeWeb3({"input": b"\x00"}),
@@ -477,7 +496,7 @@ INVALID_FORMATS = [
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad_format", INVALID_FORMATS)
-async def test_property_23_rejects_known_bad_formats(bad_format):
+async def test_property_23_rejects_known_bad_formats(bad_format: str) -> None:
     interface, _, _ = _build_interface()
     started = time.perf_counter()
 
@@ -493,10 +512,10 @@ async def test_property_23_rejects_known_bad_formats(bad_format):
 @given(bad_format=st.text().filter(lambda value: value not in SUPPORTED_VERIFICATION_FORMATS))
 @example("TEE_Attestation")
 @example("")
-def test_property_23_rejects_generated_formats(bad_format):
+def test_property_23_rejects_generated_formats(bad_format: str) -> None:
     interface, _, _ = _build_interface()
 
-    async def run():
+    async def run() -> None:
         with pytest.raises(UnsupportedFormatError) as excinfo:
             await _verify(interface, bad_format, {"input_hash": "x"}, proof_bytes=b"ignored")
         assert excinfo.value.supported == SUPPORTED_VERIFICATION_FORMATS
@@ -510,10 +529,10 @@ def test_property_23_rejects_generated_formats(bad_format):
 
 @settings(max_examples=50, deadline=None)
 @given(payload=st.binary(max_size=256))
-def test_property_24_malformed_payloads_fail_fast(payload):
+def test_property_24_malformed_payloads_fail_fast(payload: bytes) -> None:
     interface, _, _ = _build_interface()
 
-    async def run():
+    async def run() -> None:
         response, elapsed = await _verify(interface, TEE_FORMAT, {"input_hash": "x"}, proof_bytes=payload)
         assert response.result is False
         assert elapsed < LATENCY_BUDGET_S
@@ -525,13 +544,13 @@ def test_property_24_malformed_payloads_fail_fast(payload):
 # Property 21-24 over the real FastAPI surface over HTTP (13.7)
 # --------------------------------------------------------------------------- #
 
-async def _post(client, **payload):
+async def _post(client: httpx.AsyncClient, **payload: Any) -> httpx.Response:
     return await client.post("/verify", json=payload)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("proof_format", [TEE_FORMAT, ZKML_FORMAT])
-async def test_property_21_and_24_over_http(proof_format):
+async def test_property_21_and_24_over_http(proof_format: str) -> None:
     interface, tee_verifier, _ = _build_interface()
     if proof_format == TEE_FORMAT:
         proof_bytes, public_inputs, enclave = _tee_proof()
@@ -571,7 +590,7 @@ async def test_property_21_and_24_over_http(proof_format):
 
 
 @pytest.mark.asyncio
-async def test_property_22_over_http_by_reference_matches_by_value():
+async def test_property_22_over_http_by_reference_matches_by_value() -> None:
     storage = InMemoryStorage()
     interface, tee_verifier, _ = _build_interface(storage)
     proof_bytes, public_inputs, enclave = _tee_proof()
@@ -605,7 +624,7 @@ async def test_property_22_over_http_by_reference_matches_by_value():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad_format", ["TEE_Attestation", "tee_attestations", ""])
-async def test_property_23_over_http_returns_400_with_supported_list(bad_format):
+async def test_property_23_over_http_returns_400_with_supported_list(bad_format: str) -> None:
     interface, _, _ = _build_interface()
     transport = httpx.ASGITransport(app=create_app(interface))
 
@@ -618,7 +637,7 @@ async def test_property_23_over_http_returns_400_with_supported_list(bad_format)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad_format", [None, 123, ["tee_attestation"], {"format": "tee_attestation"}])
-async def test_property_23_over_http_rejects_non_string_formats(bad_format):
+async def test_property_23_over_http_rejects_non_string_formats(bad_format: object) -> None:
     interface, _, _ = _build_interface()
     transport = httpx.ASGITransport(app=create_app(interface))
 
@@ -629,7 +648,7 @@ async def test_property_23_over_http_rejects_non_string_formats(bad_format):
 
 
 @pytest.mark.asyncio
-async def test_default_app_entrypoint_serves_verification():
+async def test_default_app_entrypoint_serves_verification() -> None:
     """The documented ``uvicorn ...:create_default_app`` entrypoint must serve."""
     transport = httpx.ASGITransport(app=create_default_app())
 
@@ -645,7 +664,7 @@ async def test_default_app_entrypoint_serves_verification():
 
 
 @pytest.mark.asyncio
-async def test_default_app_honors_tee_trusted_keys_path(tmp_path, monkeypatch):
+async def test_default_app_honors_tee_trusted_keys_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``TEE_TRUSTED_KEYS_PATH`` is a real trust anchor, not dead config.
 
     The same attestation must be rejected as ``invalid_signature`` when no key
@@ -661,7 +680,7 @@ async def test_default_app_honors_tee_trusted_keys_path(tmp_path, monkeypatch):
         "proof_bytes": proof_bytes.decode(),
     }
 
-    async def verify_with(app):
+    async def verify_with(app: FastAPI) -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://verify") as client:
             return await client.post("/verify", json=payload)
@@ -689,7 +708,7 @@ async def test_default_app_honors_tee_trusted_keys_path(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_verification_http_health_endpoint():
+async def test_verification_http_health_endpoint() -> None:
     interface, _, _ = _build_interface()
     transport = httpx.ASGITransport(app=create_app(interface))
 
@@ -701,17 +720,18 @@ async def test_verification_http_health_endpoint():
 
 
 class _SlowInterface:
-    def __init__(self, delay: float):
+    def __init__(self, delay: float) -> None:
         self.delay = delay
 
-    async def verify(self, _request):
+    async def verify(self, _request: VerificationRequest) -> VerificationResponse:
         await asyncio.sleep(self.delay)
         raise AssertionError("verify should have been cut off by the API timeout")
 
 
 @pytest.mark.asyncio
-async def test_verification_http_times_out_gracefully():
-    transport = httpx.ASGITransport(app=create_app(_SlowInterface(delay=0.5), timeout_s=0.01))
+async def test_verification_http_times_out_gracefully() -> None:
+    slow = cast(VerificationInterface, _SlowInterface(delay=0.5))
+    transport = httpx.ASGITransport(app=create_app(slow, timeout_s=0.01))
 
     async with httpx.AsyncClient(transport=transport, base_url="http://verify") as client:
         response = await _post(client, proof_format=TEE_FORMAT, public_inputs={}, proof_bytes="")

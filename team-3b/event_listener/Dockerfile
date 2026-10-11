@@ -1,8 +1,14 @@
-FROM python:3.11-slim
+# syntax=docker/dockerfile:1
 
-WORKDIR /app
-COPY requirements.txt requirements-dev.txt pyproject.toml ./
-RUN pip install --no-cache-dir --retries 10 --timeout 120 -r requirements.txt
+# Event Listener: a long-lived poller, not a web server. It follows the mock
+# chain, pairs TaskCreated with TaskFunded, and dispatches complete tasks.
+#
+# It reads the compiled contract ABIs from mocks/contracts/artifacts/ at
+# startup; docker-compose.yml mounts that directory read-only because the
+# artifacts are git-ignored build output produced by the deploy step.
+FROM accion-base:latest
+
 COPY common ./common
 COPY event_listener ./event_listener
+
 CMD ["python", "-m", "event_listener.runner"]
