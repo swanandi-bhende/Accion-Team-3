@@ -1,4 +1,4 @@
-"""Step 16.7: the whole internal pipeline, end to end, against the mock chain.
+"""Step 16.7: the whole internal pipeline, end to end, against Team A's contracts.
 
 One task walks task event -> inference -> TEE attestation + zkML proof ->
 on-chain submission -> independent verification. Every hop is asserted against a
@@ -68,10 +68,10 @@ class CapturingSubmitter:
 
 @pytest.fixture
 def wired(
-    mock_chain: tuple[Any, Any, Any], memory_storage: StorageBackend, tmp_path: Path
+    team_a_chain: tuple[Any, Any, Any], memory_storage: StorageBackend, tmp_path: Path
 ) -> dict[str, Any]:
     """Real components end to end; only storage/IPFS is a double."""
-    web3, task_manager, escrow = mock_chain
+    web3, task_manager, escrow = team_a_chain
     redis_client = fakeredis.FakeRedis(decode_responses=False)
     registry = ModelRegistry(redis_client, memory_storage)
 

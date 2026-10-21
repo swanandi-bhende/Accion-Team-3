@@ -20,10 +20,10 @@ from proof_submitter import ProofSubmitter
 
 @pytest.mark.asyncio
 async def test_event_listener_to_proof_submitter_pipeline(
-    mock_chain: tuple[Web3, Any, Any],
+    team_a_chain: tuple[Web3, Any, Any],
     create_funded_task: Callable[[bytes], tuple[Any, Any, Any]],
 ) -> None:
-    web3, task_manager, escrow = mock_chain
+    web3, task_manager, escrow = team_a_chain
     redis = fakeredis.FakeRedis(decode_responses=False)
     description_hash = web3.keccak(text="pipeline-model")
     task_id, created_receipt, funded_receipt = create_funded_task(description_hash)

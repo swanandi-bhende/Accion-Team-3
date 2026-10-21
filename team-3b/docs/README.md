@@ -9,7 +9,11 @@
 - `DEV_SETUP.md`: Local development bootstrapping, required environment keys, and service/port map.
 - `FEDERATED_LEARNING.md`: Aggregation strategies, per-round provenance, SuperLink deployment, and the secure-aggregation roadmap.
 - `HOW_TO_VERIFY.md`: Independent proof-verification guide and reason codes.
-- `INTEGRATION_CONTRACTS.md`: Authoritative Team A / Team C mock schemas and signatures.
+- `INTEGRATION_CONTRACTS.md`: Confirmed Team A contract interface (Galileo testnet) and the Team C agent schema.
+- `INTEGRATION_LOG.md`: Every interface discrepancy, its status, and what was changed to resolve it.
+- `../deployments/team-a.env.example`: Environment profile for running against Team A's Galileo deployment.
+- `../chain/README.md`: The local Hardhat node that runs Team A's deployed bytecode (no Solidity here).
+- `../mocks/README.md`: Which mocks are retired (`mocks/legacy_mock_contracts/`, do not use) and what replaced them.
 - `ROADMAP.md`: The three subsystem checkpoints and the path from them to the integrated pipeline.
 - `TEE_NOTES.md`: TEE simulation status and hardware-production requirements.
 - `ZKML_SPIKE.md`: zkML toolchain evaluation, benchmarks, and decision.

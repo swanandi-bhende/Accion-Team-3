@@ -8,6 +8,7 @@ import redis.asyncio as redis
 from web3 import Web3
 
 from common.config import get_settings
+from common.web3_checks import signer_address, verify_chain_id
 from event_listener.config import load_contract_abi
 from proof_submitter.submitter import ProofSubmitter
 
@@ -29,10 +30,17 @@ async def main() -> None:
 
     replay_settings = settings.require("web3_rpc_url", "proof_submitter_contract_address")
     web3 = Web3(Web3.HTTPProvider(replay_settings.web3_rpc_url or ""))
+    verify_chain_id(web3, replay_settings.web3_chain_id, "replay-dlq")
     address = web3.to_checksum_address(replay_settings.proof_submitter_contract_address or "")
-    contract = web3.eth.contract(address=address, abi=load_contract_abi("TaskManager"))
+    contract = web3.eth.contract(
+        address=address, abi=load_contract_abi(replay_settings.proof_submitter_artifact)
+    )
     submitter = ProofSubmitter(
-        web3, contract, client, replay_settings.proof_submitter_private_key
+        web3,
+        contract,
+        client,
+        replay_settings.proof_submitter_private_key,
+        signer_address=signer_address(web3, replay_settings.proof_submitter_private_key, "replay-dlq"),
     )
     replay_proofs = [
         type("ReplayProof", (), proof)()

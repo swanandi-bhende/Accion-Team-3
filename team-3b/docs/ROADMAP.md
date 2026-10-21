@@ -23,9 +23,10 @@ simulator, not hardware-backed SGX/SEV, and that is stated explicitly wherever
 it matters.
 
 **On-chain pipeline.** The event listener consumes `TaskCreated`/`TaskFunded`,
-the proof submitter batches proof submissions, and a mock Hardhat chain provides
-the contracts. The contracts are still Team A mocks, and real addresses, ABIs,
-and finality policy are outstanding dependencies.
+the proof submitter batches proof submissions, and the local chain runs Team A's
+deployed bytecode at their Galileo addresses. The contracts are real; RPC
+endpoints, a funded allow-listed signer, and the finality policy are still
+outstanding from Team A.
 
 **Federated learning.** The orchestrator trains through Flower with FedAvg by
 default, records per-round provenance incrementally in Redis, and stores the
@@ -38,14 +39,17 @@ cryptographic secure aggregation.
 
 Step 16 onward integrates the three tracks into one coherent path -- a
 federated-trained model flowing into on-chain settlement with a verifiable
-proof -- rather than each subsystem being validated in isolation. That work
-depends on Team A providing real contract addresses and ABIs; until then the
-integration runs against mocks.
+proof -- rather than each subsystem being validated in isolation. Team A's
+addresses and ABIs are in hand, so that work runs against their contracts; the
+remaining dependency is a funded prover on Galileo and a decision on who accepts
+the bid that settlement pays.
 
 ## Outstanding dependencies and risks
 
-- Real `TaskManager`/`Escrow` addresses, ABIs, and signer/network configuration
-  from Team A.
+- A published Galileo RPC endpoint and a funded, allow-listed signer from Team A
+  (addresses and ABIs are delivered).
+- A bid/worker policy: `settleTask` pays `taskWorker`, so proofs on a task nobody
+  bid on are recorded but unpayable (see `docs/INTEGRATION_CONTRACTS.md` §6).
 - Hardware-backed TEE attestation rather than the simulator.
 - Production zkML backend selection and proof-time budgets for real model sizes.
 - A SuperLink deployment validated in staging, plus TLS, client authentication,

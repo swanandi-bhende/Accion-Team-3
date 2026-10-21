@@ -17,14 +17,23 @@ The system workflow follows a strict pipeline:
 `Event_Listener` → `Inference_Engine` → `TEE_Runtime` → `Proof_Generator (zkML)` → `Proof_Submitter` → `on-chain`
 
 ### Integration Status
-- **Team A (Smart Contracts):** MOCKED. Currently utilizing stub ABIs and events in `/mocks/contracts/` until the real task manager and escrow contracts are shipped.
+- **Team A (Smart Contracts):** INTEGRATED. The listener and submitter run against Team A's real contracts — ABIs in `team_a_assets/`, addresses in `deployments/galileo.json`, and their deployed bytecode replayed onto the local `chain/` node by `scripts/ops/install_team_a_local.py`. Chain id 16602, the same as 0G Galileo.
 - **Team C (Agent Logic):** MOCKED. Expected agent payloads are stubbed locally pending finalized schemas from Team C.
+
+### Do not use the mock contracts
+
+Our own stub contracts are archived in `mocks/legacy_mock_contracts/`. **They are
+retired: do not deploy them, do not point a service at them, and do not test
+against them.** They mirror Team A's ABI shape but none of their authorisation or
+lifecycle rules (Prover allow-list, bids, escrow release), so a passing test there
+proves almost nothing. Every chain-facing test in this repository now installs
+Team A's real bytecode at their Galileo addresses instead — see `mocks/README.md`.
 
 ## Quick Start
 1. **Clone the repository.**
 2. **Install dependencies:** Run `./setup.sh` (Requires Python 3.10+ and Docker).
 3. **Configure Environment:** Copy `.env.example` to `.env` and fill in necessary fields.
-4. **Run Tests:** `pytest tests/unit/ tests/property/ --tb=short -v`
+4. **Run Tests:** `pytest tests/unit/ tests/property/ --tb=short -v` (the chain tests start a local Hardhat node running Team A's contracts; Node 20+ is needed)
 5. **Start Services:** `docker-compose up -d`
 
 ## Core Loop Checkpoint

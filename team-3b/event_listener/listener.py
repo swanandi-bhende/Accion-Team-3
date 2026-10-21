@@ -54,6 +54,19 @@ class EventListener:
         return str(value.hex()) if hasattr(value, "hex") else str(value)
 
     @staticmethod
+    def _event_amount(args: dict[str, Any]) -> int:
+        """Read the funded amount under either field name.
+
+        Team A's ``EscrowContract`` emits ``TaskFunded(taskId, funder, amount)``;
+        our earlier mock named the same field ``fundedAmount``. Accepting both
+        keeps an in-flight stack and the real deployment readable by one binary.
+        """
+        for name in ("amount", "fundedAmount"):
+            if name in args:
+                return int(args[name])
+        raise KeyError("TaskFunded has neither an 'amount' nor a 'fundedAmount' field")
+
+    @staticmethod
     def _event_args(event: Any) -> dict[str, Any]:
         args = getattr(event, "args", None)
         if args is None and isinstance(event, dict):
@@ -139,7 +152,7 @@ class EventListener:
         self._task_events.setdefault(task_id, {})["funded"] = {
             "task_id": task_id,
             "funder": args["funder"],
-            "funded_amount": int(args["fundedAmount"]),
+            "funded_amount": self._event_amount(args),
             "block_number": self._block_number(event),
         }
         self._pending_since.setdefault(task_id, self.clock())

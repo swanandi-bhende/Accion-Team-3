@@ -49,14 +49,22 @@ class ProofSubmitter:
         batch_window: float = BATCH_WINDOW,
         sleep: Callable[[float], Any] = asyncio.sleep,
         clock: Callable[[], float] = time.time,
+        signer_address: str | None = None,
     ):
         self.web3 = web3
         self.contract = contract
         self.redis = redis_client
         self.private_key = private_key
+        # On a real network the node has no unlocked accounts, so the sender must
+        # be resolved from the private key before the first transaction.
+        self.signer_address = signer_address
         self.batch_window = batch_window
         self.sleep = sleep
         self.clock = clock
+        self._batch_limit: int | None = None
+        # Rejections are keyed by transaction hash so a concurrent batch can never
+        # pick up another batch's rejected proofs.
+        self._rejections_by_tx: dict[str, list[PendingProof]] = {}
         self._pending_proofs: list[PendingProof] = []
         self._batch_timer: asyncio.Task | None = None
         self._batch_lock = asyncio.Lock()
@@ -66,6 +74,7 @@ class ProofSubmitter:
             "retries": 0,
             "dlq_batches": 0,
             "last_batch_size": 0,
+            "rejected_by_contract": 0,
         }
 
     async def submit_proof(
@@ -118,11 +127,18 @@ class ProofSubmitter:
         for attempt in range(1, self.MAX_RETRIES + 1):
             try:
                 tx_hash = await self._send_transaction(proofs)
+                rejected = self._rejections_by_tx.pop(tx_hash, [])
                 await self._emit_anchoring_event(tx_hash, proofs)
                 self.metrics["batches_submitted"] += 1
-                self.metrics["proofs_submitted"] += len(proofs)
+                self.metrics["proofs_submitted"] += len(proofs) - len(rejected)
                 self.metrics["last_batch_size"] = len(proofs)
                 logger.info("Proof batch submitted size=%s tx_hash=%s", len(proofs), tx_hash)
+                if rejected:
+                    # Team A's submitProofs returns a count and rejects individual
+                    # entries with ProofRejected instead of reverting the batch, so
+                    # retrying the whole batch would resubmit the accepted ones.
+                    self.metrics["rejected_by_contract"] += len(rejected)
+                    await self._persist_to_dlq(rejected, RuntimeError("rejected on chain via ProofRejected"))
                 return tx_hash
             except Exception as error:
                 last_error = error
@@ -134,21 +150,78 @@ class ProofSubmitter:
         await self._emit_alert(proofs, last_error)
         return None
 
+    def _sender(self) -> str:
+        if self.signer_address:
+            return self.signer_address
+        return str(self.web3.eth.accounts[0])
+
+    def _max_batch_size(self) -> int | None:
+        """Team A's ``MAX_PROOF_BATCH``, when this contract advertises one."""
+        if self._batch_limit is None:
+            factory = getattr(getattr(self.contract, "functions", None), "MAX_PROOF_BATCH", None)
+            if factory is None:
+                return None
+            try:
+                limit = int(factory().call())
+            except Exception as error:  # noqa: BLE001 - older ABIs simply lack the getter
+                logger.warning("Could not read MAX_PROOF_BATCH: %s", error)
+                return None
+            self._batch_limit = limit if limit > 0 else None
+        return self._batch_limit
+
+    async def _submit_all(self, proofs: list[PendingProof]) -> tuple[str, list[PendingProof]]:
+        """Send ``proofs`` in contract-sized chunks; return the last hash and any rejects.
+
+        Splitting on ``MAX_PROOF_BATCH`` keeps a large buffer inside the contract's
+        batch limit instead of reverting the whole batch with ``BatchTooLarge``.
+        """
+        if not proofs:
+            return "", []
+        limit = self._max_batch_size() or len(proofs)
+        last_hash = ""
+        rejected: list[PendingProof] = []
+        for start in range(0, len(proofs), limit):
+            chunk = proofs[start:start + limit]
+            tx_hash, receipt = self._send_chunk(chunk)
+            last_hash = tx_hash
+            chunk_rejected = self._rejected_from_receipt(receipt, chunk)
+            if chunk_rejected:
+                logger.warning(
+                    "PROOF_BATCH_PARTIAL accepted=%s rejected=%s task_ids=%s",
+                    len(chunk) - len(chunk_rejected),
+                    len(chunk_rejected),
+                    [proof.task_id for proof in chunk_rejected],
+                )
+                rejected.extend(chunk_rejected)
+        return last_hash, rejected
+
     async def _send_transaction(self, proofs: list[PendingProof]) -> str:
+        """Submit every proof; returns the last transaction hash.
+
+        Contract-level rejections are recorded under the transaction hash, where
+        ``_submit_batch`` collects them; this entry point only reports the hash.
+        """
+        tx_hash, rejected = await self._submit_all(proofs)
+        if rejected:
+            self._rejections_by_tx[tx_hash] = rejected
+        return tx_hash
+
+    def _send_chunk(self, proofs: list[PendingProof]) -> tuple[str, Any]:
         task_ids = [self._bytes32(proof.task_id) for proof in proofs]
         proof_hashes = [self._bytes32(proof.proof_hash) for proof in proofs]
         model_cids = [proof.model_cid for proof in proofs]
         result_hashes = [self._bytes32(proof.result_hash) for proof in proofs]
+        sender = self._sender()
         transaction = self.contract.functions.submitProofs(task_ids, proof_hashes, model_cids, result_hashes).build_transaction({
-            "from": self.web3.eth.accounts[0],
-            "nonce": self.web3.eth.get_transaction_count(self.web3.eth.accounts[0]),
+            "from": sender,
+            "nonce": self.web3.eth.get_transaction_count(sender),
         })
         if self.private_key:
             signed = self.web3.eth.account.sign_transaction(transaction, private_key=self.private_key)
             tx_hash = self.web3.eth.send_raw_transaction(signed.raw_transaction)
         else:
             tx_hash = self.contract.functions.submitProofs(task_ids, proof_hashes, model_cids, result_hashes).transact({
-                "from": self.web3.eth.accounts[0],
+                "from": sender,
             })
         receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
         if getattr(receipt, "status", receipt.get("status", 1) if isinstance(receipt, dict) else 1) != 1:
@@ -158,7 +231,38 @@ class ProofSubmitter:
             self.clock() - min(proof.submitted_at for proof in proofs),
             len(proofs),
         )
-        return str(tx_hash.hex()) if hasattr(tx_hash, "hex") else str(tx_hash)
+        normalised = str(tx_hash.hex()) if hasattr(tx_hash, "hex") else str(tx_hash)
+        return normalised, receipt
+
+    def _rejected_from_receipt(self, receipt: Any, proofs: list[PendingProof]) -> list[PendingProof]:
+        """Proofs the contract reported as rejected in this receipt.
+
+        Empty when the ABI has no ``ProofRejected`` event (the mock) or the receipt
+        cannot be decoded, in which case the batch is treated as fully accepted.
+        """
+        events = getattr(self.contract, "events", None)
+        event_factory = getattr(events, "ProofRejected", None) if events is not None else None
+        if event_factory is None:
+            return []
+        try:
+            entries = event_factory().process_receipt(receipt)
+        except Exception as error:  # noqa: BLE001 - undecodable receipt is not a rejection
+            logger.debug("Could not decode ProofRejected events: %s", error)
+            return []
+        rejected_ids: dict[bytes, int] = {}
+        for entry in entries:
+            args = dict(entry["args"])
+            raw_task_id = args["taskId"]
+            task_id = raw_task_id.hex() if hasattr(raw_task_id, "hex") else str(raw_task_id)
+            rejected_ids[self._bytes32(task_id)] = int(args["reason"])
+        rejected = [proof for proof in proofs if self._bytes32(proof.task_id) in rejected_ids]
+        for proof in rejected:
+            logger.warning(
+                "PROOF_REJECTED task_id=%s reason=%s",
+                proof.task_id,
+                rejected_ids[self._bytes32(proof.task_id)],
+            )
+        return rejected
 
     @staticmethod
     def _bytes32(value: str) -> bytes:

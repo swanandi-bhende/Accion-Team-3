@@ -44,6 +44,26 @@ class ConfigurationError(Exception):
     """
 
 
+class ChainMismatchError(ConfigurationError):
+    """Raised when an RPC endpoint serves a chain other than the configured one.
+
+    Guarding on the chain id (rather than trusting a URL) is what stops a stack
+    that is configured for Team A's Galileo deployment from quietly submitting
+    proofs to a local Hardhat node.
+    """
+
+    def __init__(self, service: str, expected: int, actual: int, rpc_url: str | None = None):
+        self.service = service
+        self.expected = expected
+        self.actual = actual
+        self.rpc_url = rpc_url
+        target = f"{rpc_url} " if rpc_url else ""
+        super().__init__(
+            f"{service}: {target}serves chain id {actual}, but WEB3_CHAIN_ID is {expected}. "
+            "Check WEB3_RPC_URL/WEB3_WS_URL, or unset WEB3_CHAIN_ID to accept any chain."
+        )
+
+
 class UnsupportedFormatError(Exception):
     """Raised when verification receives an unsupported proof format."""
 

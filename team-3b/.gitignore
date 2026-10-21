@@ -1,9 +1,5 @@
 # Environment variables
 .env
-.env
-.env.mock
-# Address file written by the mock deploy step (build output, like artifacts/).
-mocks/contracts/deployments/
 .env.*
 .env/
 
@@ -48,9 +44,9 @@ coverage.xml
 
 # Hardhat/Node
 node_modules/
-mocks/contracts/artifacts/
-mocks/contracts/cache/
-mocks/contracts/typechain-types/
+chain/artifacts/
+chain/cache/
+chain/typechain-types/
 
 # Logs and databases
 logs/

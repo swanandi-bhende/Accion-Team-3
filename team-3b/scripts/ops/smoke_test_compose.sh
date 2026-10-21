@@ -7,10 +7,12 @@
 # Checks, in order, that the stack is genuinely working rather than merely started:
 #   1. every long-running service reports healthy, and one-shot jobs exited 0;
 #   2. Redis answers PING;
-#   3. the mock chain answers JSON-RPC and has code at the deployed addresses,
-#      and the event-listener is configured with those same addresses;
+#   3. the local chain answers JSON-RPC on Team A's chain id, Team A's contracts
+#      have code at their Galileo addresses, and the event-listener is configured
+#      with those same addresses;
 #   4. the inference engine serves the seeded toy model;
-#   5. a fresh task created on the chain is dispatched by the event-listener.
+#   5. a fresh task created and funded on Team A's contracts is dispatched by the
+#      event-listener.
 #
 # Environment overrides:
 #   SMOKE_WAIT_TIMEOUT   seconds to wait for services to become healthy (default 180)
@@ -27,13 +29,14 @@ cd "$REPO_ROOT"
 RPC_URL="http://127.0.0.1:8545"
 INFERENCE_URL="http://127.0.0.1:8000"
 VERIFICATION_URL="http://127.0.0.1:8001"
-DEPLOYMENTS_FILE="mocks/contracts/deployments/localhost.json"
+DEPLOYMENTS_FILE="deployments/galileo.json"
+EXPECTED_CHAIN_ID=16602
 WAIT_TIMEOUT=${SMOKE_WAIT_TIMEOUT:-180}
 TASK_TIMEOUT=${SMOKE_TASK_TIMEOUT:-60}
 SKIP_TRIGGER=${SMOKE_SKIP_TRIGGER:-0}
 
 HEALTHY_SERVICES="redis ipfs hardhat-node inference-engine verification-api event-listener proof-submitter"
-ONE_SHOT_SERVICES="hardhat-deploy seed-model fl-orchestrator"
+ONE_SHOT_SERVICES="team-a-contracts seed-model fl-orchestrator"
 
 ok() {
     printf 'SERVICE=%s STATUS=succeeded %s\n' "$1" "$2"
@@ -118,9 +121,11 @@ check_chain() {
     local chain_id
     chain_id=$(rpc eth_chainId '[]' | json_field '["result"]') || fail "hardhat-node" "eth_chainId failed"
     [[ -n "$chain_id" ]] || fail "hardhat-node" "empty chain id"
-    ok "hardhat-node" "chain_id=$chain_id"
+    [[ $((chain_id)) -eq $EXPECTED_CHAIN_ID ]] \
+        || fail "hardhat-node" "chain_id=$((chain_id)) is not Team A's $EXPECTED_CHAIN_ID"
+    ok "hardhat-node" "chain_id=$((chain_id))"
 
-    [[ -f "$DEPLOYMENTS_FILE" ]] || fail "hardhat-deploy" "missing $DEPLOYMENTS_FILE"
+    [[ -f "$DEPLOYMENTS_FILE" ]] || fail "team-a-contracts" "missing $DEPLOYMENTS_FILE"
     local name address code listener_value
     for name in TASK_MANAGER_ADDRESS ESCROW_ADDRESS; do
         address=$(json_field "[\"$name\"]" < "$DEPLOYMENTS_FILE")
@@ -143,16 +148,18 @@ check_inference() {
     ok "inference-engine" "model=toy_linear inference=receipt"
 }
 
-# 5. A new task on the chain is dispatched by the running listener
+# 5. A new task on Team A's contracts is dispatched by the running listener.
+#    The trigger runs in the service image: web3 and Team A's ABIs are there, and
+#    it reaches the node over the compose network.
 check_dispatch() {
     local output task_id deadline value
     output=$(mktemp)
-    (cd mocks/contracts && TRIGGER_ONLY=true WEB3_RPC_URL="$RPC_URL" \
-        npx hardhat run scripts/deploy_and_trigger.js --network localhost) >"$output" 2>&1 \
-        || { tail -20 "$output"; rm -f "$output"; fail "trigger" "deploy_and_trigger.js failed"; }
-    task_id=$(grep -oE 'taskId: 0x[0-9a-fA-F]+' "$output" | head -1 | cut -d' ' -f2)
+    docker compose run --rm --no-deps -T team-a-contracts \
+        python -m scripts.ops.trigger_team_a_task >"$output" 2>&1 \
+        || { tail -20 "$output"; rm -f "$output"; fail "trigger" "trigger_team_a_task failed"; }
+    task_id=$(grep -oE 'TASK_CREATED task_id=0x[0-9a-fA-F]+' "$output" | head -1 | cut -d'=' -f2)
     rm -f "$output"
-    [[ -n "$task_id" ]] || fail "trigger" "no taskId in trigger output"
+    [[ -n "$task_id" ]] || fail "trigger" "no task id in trigger output"
 
     deadline=$(( $(date +%s) + TASK_TIMEOUT ))
     while true; do

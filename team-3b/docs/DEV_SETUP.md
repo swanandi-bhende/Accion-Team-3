@@ -3,6 +3,7 @@
 ## Prerequisites
 - Python 3.11+ (Flower 1.39 requires 3.11 or newer)
 - Docker 20.10+ (and docker-compose)
+- Node 20+ — the local chain (`chain/`) runs Team A's deployed contracts, and the chain tests start it
 - Git
 
 ## Clone and Navigate
@@ -47,10 +48,11 @@ of them before the Inference Engine starts.
 | `MODEL_STORAGE_URL` | Storage node URL, e.g. `http://localhost:5001` |
 | `WEB3_WS_URL` | WebSocket RPC used by the event listener |
 | `WEB3_RPC_URL` | HTTP RPC used by the proof submitter |
+| `WEB3_CHAIN_ID` | Expected chain id (`16602` on Team A's Galileo testnet); a mismatch stops both on-chain services |
 | `TASK_MANAGER_ADDRESS` | Team A `TaskManager` contract address |
-| `ESCROW_ADDRESS` | Team A `Escrow` contract address |
+| `ESCROW_ADDRESS` | Team A `EscrowContract` address |
 | `PROOF_SUBMITTER_PRIVATE_KEY` | Key that signs proof submissions |
-| `PROOF_SUBMITTER_CONTRACT_ADDRESS` | On-chain settlement contract address |
+| `PROOF_SUBMITTER_CONTRACT_ADDRESS` | Contract exposing `submitProofs` (Team A's `TaskManager`) |
 | `ZKML_PROVING_KEY_STORE` | Directory holding zkML proving keys |
 | `ZKML_SUPPORTED_ARCHITECTURES` | Comma-separated architectures with circuits |
 
@@ -90,41 +92,45 @@ against the local chain you can use hardhat's well-known development account #0,
 `0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80` — that key is
 public and must **never** be used on a real network.
 
-**2. Produced by the mock deployment**
+**2. Supplied by Team A (already committed)**
 
-`TASK_MANAGER_ADDRESS`, `ESCROW_ADDRESS` and `PROOF_SUBMITTER_CONTRACT_ADDRESS`
-are emitted by `mocks/contracts/scripts/deploy_and_trigger.js`, which deploys the
-stub contracts and **writes all three to `.env.mock`** in the repo root. The mock
-`TaskManager` already exposes `submitProofs` and `proof_submitter/runner.py`
-loads that ABI, so locally the settlement address is the **same address as
-`TASK_MANAGER_ADDRESS`**.
+`TASK_MANAGER_ADDRESS`, `ESCROW_ADDRESS`, `PROOF_SUBMITTER_CONTRACT_ADDRESS`,
+`SETTLEMENT_ADDRESS`, `BOUNTY_TOKEN_ADDRESS`, `WEB3_CHAIN_ID=16602`, the artifact
+basenames and `CONTRACT_ARTIFACTS_DIR=team_a_assets` are all recorded in
+`deployments/galileo.json` — Team A's real 0G Galileo deployment. `.env.example`
+carries those values, so there is nothing to generate before the first boot.
 
-`event-listener` and `proof-submitter` read that file through `env_file` (`.env`
-first, then `.env.mock`, so the mock values win). `env_file` is read at container
-**creation** time, so the consumers must be created after the deploy has run:
+The local stack runs **Team A's own contracts**, not stubs: the `hardhat-node`
+service starts `chain/` with `chainId: 16602`, and the one-shot
+`team-a-contracts` service runs `python -m scripts.ops.install_team_a_local`,
+which replays their deployed runtime bytecode onto that node at the same Galileo
+addresses and reproduces the constructor state (owner, escrow token, wiring,
+Prover allow-list). The listener and submitter therefore enforce Team A's real
+authorisation and lifecycle rules.
 
 ```bash
 docker compose up -d redis ipfs hardhat-node
-docker compose up hardhat-deploy          # deploys stubs, writes .env.mock
-docker compose up -d                      # creates the consumers with those addresses
-# if they already existed:
-docker compose up -d --force-recreate event-listener proof-submitter
+docker compose up team-a-contracts         # installs + wires Team A's contracts
+docker compose up -d
 ```
 
-The deploy command sets `WEB3_RPC_URL=http://hardhat-node:8545` and the script
-waits for that RPC before deploying: inside the deploy container `127.0.0.1` is
-that container itself, not the node.
+`team-a-contracts` sets `WEB3_RPC_URL=http://hardhat-node:8545`: inside a
+container `127.0.0.1` is that container itself, not the node.
 
-Both consumers also mount `./mocks` read-only. `load_contract_abi` reads the
-compiled artifacts under `mocks/contracts/artifacts/`, which are git-ignored build
-output produced by that same deploy — the images ship no ABIs of their own.
+Both consumers mount `./team_a_assets` and `./deployments` read-only, so
+`load_contract_abi` reads Team A's exported ABIs at startup. The images ship no
+ABIs of their own.
+
+Our earlier stub contracts are archived in `mocks/legacy_mock_contracts/` and
+**must not be used**; see `mocks/README.md`.
 
 **3. Only another team can supply**
 
 | Key | Source |
 | --- | --- |
-| `TASK_MANAGER_ADDRESS`, `ESCROW_ADDRESS` | Team A's deployed contracts (use the mock values above for local work) |
-| `PROOF_SUBMITTER_CONTRACT_ADDRESS` | Team 3a's settlement contract exposing `submitProofs` — see `INTEGRATION_CONTRACTS.md` |
+| `TASK_MANAGER_ADDRESS`, `ESCROW_ADDRESS` | Team A's deployed contracts — `deployments/galileo.json` has them |
+| `PROOF_SUBMITTER_CONTRACT_ADDRESS` | Team A's `TaskManager` (`submitProofs` lives there) — see `INTEGRATION_CONTRACTS.md` |
+| `TASK_MANAGER_ARTIFACT`, `ESCROW_ARTIFACT`, `PROOF_SUBMITTER_ARTIFACT` | Artifact basenames, when the provider names a contract differently (`EscrowContract`, not `Escrow`) |
 | `WEB3_RPC_URL`, `WEB3_WS_URL` | The target chain's HTTP and WebSocket RPC endpoints |
 
 `WEB3_WS_URL` is accepted but not used as a socket today: web3 8.x ships only an
@@ -157,22 +163,16 @@ do not chase real credentials:
 - `ZEROG_RPC_ENDPOINT`, `ZEROG_PRIVATE_KEY` — only meaningful once the 0G backend
   is implemented.
 
-### Mock stack overrides: `.env.mock`
+### Team A addresses are read, not copied
 
-`.env.mock` is **generated, not authored**: the deploy script writes
-`TASK_MANAGER_ADDRESS`, `ESCROW_ADDRESS` and `PROOF_SUBMITTER_CONTRACT_ADDRESS`
-there. It is git-ignored and **optional** — docker-compose loads it with
-`required: false`, and it is listed *after* `.env` in `env_file`, so the mock
-chain overrides whatever `.env` says while a fresh clone without it still boots.
-Add `PROOF_SUBMITTER_PRIVATE_KEY` yourself if you want the submitter to sign with
-a specific account.
+`MOCK_DEPLOYMENTS_PATH=./deployments/galileo.json` tells `Settings` to adopt any
+contract address that is blank or still the all-zero placeholder from
+`deployments/galileo.json`. Compose sets it for the listener and submitter, and
+the file is committed, so a fresh clone boots without editing `.env`.
 
-Because `.env.mock` is read at container **creation** time, recreate the
-consumers after the mock chain first writes it:
-
-```bash
-docker compose up -d --force-recreate event-listener proof-submitter
-```
+The name is historical (it used to point at the mock deploy's output); the file
+it points at now holds Team A's deployment. Add `PROOF_SUBMITTER_PRIVATE_KEY`
+yourself if you want the submitter to sign with a specific account.
 
 ## Verify Installation
 Run tests to ensure dependencies and environment are sane:
@@ -216,8 +216,8 @@ uvicorn "verification.app:create_default_app" --factory --port 8001
 
 ## Service Startup Order
 
-Compose declares nine services. Dependencies (`depends_on`) make the real order:
-`redis` + `ipfs` → `hardhat-node` → `hardhat-deploy` →
+Compose declares ten services. Dependencies (`depends_on`) make the real order:
+`redis` + `ipfs` → `hardhat-node` → `team-a-contracts` →
 `inference-engine` / `event-listener` / `proof-submitter` / `verification-api` /
 `fl-orchestrator`.
 
@@ -233,9 +233,10 @@ Engine at runtime. To pre-seed a model for manual testing, run
   calls `get_settings()`, so it is the one that refuses to boot on an incomplete
   `.env`; compare against the required-keys table above.
 - **Proof submitter exits immediately:** `ConfigurationError: Missing required
-  configuration ... proof_submitter_contract_address`. Run the mock deploy so
-  `.env.mock` carries the address, then
-  `docker compose up -d --force-recreate proof-submitter` (see above).
+  configuration ... proof_submitter_contract_address` or `... task_manager_address`.
+  Check that `MOCK_DEPLOYMENTS_PATH` points at the committed
+  `deployments/galileo.json` (compose sets it for the listener and submitter). If
+  it runs outside compose, export the addresses or set the path yourself.
 - **`ZKML_PROVING_KEY_STORE` looks empty:** expected — `data/proving_keys/` is not
   populated and nothing reads the value yet (see “Validated but not yet read”).
   zkML proofs are generated by the development-commitment backend until EZKL is

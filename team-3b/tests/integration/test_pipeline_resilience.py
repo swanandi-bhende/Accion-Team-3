@@ -40,6 +40,7 @@ from inference.pipeline import (
 from inference.tee_runtime import TEERuntime
 from proof_generator.zkml_prover import ZkMLProver
 from proof_submitter.submitter import PendingProof, ProofSubmitter
+from tests import chain_helper
 
 SEALED_KEY = b"mock_sealed_key_0123456789abcdef"
 MODEL_BINARY = b"MOCK_MLP_WEIGHTS_67890"
@@ -376,10 +377,10 @@ async def test_real_prover_timeout_maps_to_a_dropped_task(
 
 @pytest.mark.asyncio
 async def test_exhausted_submission_retries_land_in_dlq_and_the_pipeline_continues(
-    mock_chain: tuple[Any, Any, Any],
+    team_a_chain: tuple[Any, Any, Any],
 ) -> None:
     """The first batch reverts until it is dead-lettered; the next task still settles."""
-    web3, task_manager, _escrow = mock_chain
+    web3, task_manager, escrow = team_a_chain
     redis_client: Any = fakeredis.FakeRedis(decode_responses=False)
     submitter = ProofSubmitter(web3, task_manager, redis_client, batch_window=10.0)
     # Retries must be instant here; the batch window stays realistic so the
@@ -420,8 +421,13 @@ async def test_exhausted_submission_retries_land_in_dlq_and_the_pipeline_continu
     assert payload["proofs"][0]["task_id"] == "t-a"
     assert "execution reverted" in payload["last_error"]
 
-    # the pipeline is not stuck: the very next task settles on chain
-    await pipeline.enqueue(_task("t-b", FAST_MODEL))
+    # the pipeline is not stuck: the very next task settles on chain. Team A's
+    # TaskManager only accepts proofs for tasks that actually exist, so this one
+    # is created and funded on chain first.
+    real_task_id, _created, _funded = chain_helper.create_and_fund(
+        web3, task_manager, escrow, chain_helper.token_contract(web3)
+    )
+    await pipeline.enqueue(_task(real_task_id.hex(), FAST_MODEL))
     settled = await pipeline.drain()
 
     assert [record.outcome for record in settled] == [OUTCOME_SUBMITTED]

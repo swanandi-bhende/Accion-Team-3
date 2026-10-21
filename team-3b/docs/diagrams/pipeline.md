@@ -11,9 +11,9 @@ decisions — not the happy path — are what keep the poll loop alive.
 
 ```mermaid
 flowchart TD
-    subgraph chain["Mock chain (Hardhat, Team A contracts)"]
+    subgraph chain["Local chain (Team A's deployed contracts)"]
         TM["TaskManager.createTask"]
-        ES["Escrow.fundTask"]
+        ES["EscrowContract.deposit (ERC-20)"]
         TM -->|TaskCreated| EL
         ES -->|TaskFunded| EL
     end

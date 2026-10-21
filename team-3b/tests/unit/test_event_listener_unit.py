@@ -5,6 +5,7 @@ import fakeredis.aioredis as fakeredis
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from common.config import get_settings
 from event_listener.app import create_status_app
 from event_listener.config import load_contract_abi
 from event_listener.listener import EventListener
@@ -19,9 +20,11 @@ def make_listener(redis: fakeredis.FakeRedis | None = None) -> EventListener:
     )
 
 
-def test_mock_contract_abis_load_from_hardhat_artifacts() -> None:
-    task_abi = load_contract_abi("TaskManager")
-    escrow_abi = load_contract_abi("Escrow")
+def test_team_a_contract_abis_load_from_the_default_artifacts_dir() -> None:
+    """The shipped defaults must resolve Team A's exports with no configuration."""
+    settings = get_settings()
+    task_abi = load_contract_abi(settings.task_manager_artifact)
+    escrow_abi = load_contract_abi(settings.escrow_artifact)
 
     assert any(item.get("name") == "TaskCreated" for item in task_abi)
     assert any(item.get("name") == "TaskFunded" for item in escrow_abi)

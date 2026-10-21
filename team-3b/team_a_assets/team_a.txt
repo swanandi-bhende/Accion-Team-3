@@ -1,0 +1,12 @@
+Our contracts are deployed on **0G Galileo Testnet** (chain ID **16602**).
+
+- Test ERC-20 token (`TEST`, 18 decimals): `0x22374BC6FF12FF2Bf407Da332F16Ee65D52CE0EC`
+- EscrowContract: `0x5B685Ca03A8072FB3f9721Dd7017Ed0D8C719217`
+- StakingContract: `0x41eCc7485d2Bbc188B4F638871ca3f00D2c65C38`
+- IdentityContract: `0xC70c8865eACC340AB15Af8d4e726F438CD639Db9`
+- TaskManager: `0xA55f34e4137aD55f48aB268d4361F2225C4B5078`
+- SettlementContract: `0x45D1a7AF404D2EDf5E5c23C7c0b6338227b9BC4E`
+
+I’ll share the contract ABIs from `exports/`: `EscrowContract.abi.json`, `StakingContract.abi.json`, `IdentityContract.abi.json`, `TaskManager.abi.json`, `SettlementContract.abi.json`, plus `abis.json` if useful.
+
+The deployment record is `deployments/galileo.json`. The `Prover` field is currently `null`.

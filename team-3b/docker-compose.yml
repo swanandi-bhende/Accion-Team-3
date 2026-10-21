@@ -1,11 +1,15 @@
 # Full stack for the Verifiable AI Execution subsystem.
 #
-#   docker compose up --build -d          # build, deploy the mock chain, start
+#   docker compose up --build -d          # build, install Team A's contracts, start
 #   scripts/ops/smoke_test_compose.sh         # verify it actually works end to end
 #
-# Nothing has to be prepared by hand: the deploy step compiles and deploys the
-# stub contracts and publishes their addresses, and every service waits for its
-# dependencies to be *healthy* rather than merely started. See docs/DEPLOYMENT.md.
+# Nothing has to be prepared by hand: the node runs a local chain with Team A's
+# *deployed* bytecode (installed by the team-a-contracts service), and every
+# service waits for its dependencies to be *healthy* rather than merely started.
+# See docs/DEPLOYMENT.md.
+#
+# The stub contracts we wrote before Team A delivered live in
+# mocks/legacy_mock_contracts/ and are not used by anything here.
 
 services:
   # Shared Python base image (docker/base.Dockerfile). It exits as soon as it
@@ -49,7 +53,7 @@ services:
 
   hardhat-node:
     image: node:20-alpine
-    working_dir: /app/mocks/contracts
+    working_dir: /app/chain
     volumes:
       - .:/app
     command: >
@@ -66,20 +70,19 @@ services:
       start_period: 40s
     restart: unless-stopped
 
-  hardhat-deploy:
-    image: node:20-alpine
-    working_dir: /app/mocks/contracts
+  # Installs Team A's deployed bytecode on the local chain (chain/ runs it), so
+  # the listener and submitter exercise the real authorisation and lifecycle rules.
+  team-a-contracts:
+    build:
+      context: .
+      dockerfile: docker/base.Dockerfile
+    working_dir: /app
     volumes:
       - .:/app
     environment:
-      - TRIGGER_MOCK_TASK=true
-      # Inside this container 127.0.0.1 is the container itself, so the config
-      # points the `localhost` hardhat network at the node container.
+      - PYTHONPATH=/app
       - WEB3_RPC_URL=http://hardhat-node:8545
-    # node_modules come from the hardhat-node service above (same bind mount);
-    # deploy_and_trigger.js also waits for the RPC itself.
-    command: >
-      sh -c "npx hardhat run scripts/deploy_and_trigger.js --network localhost"
+    command: ["python", "-m", "scripts.ops.install_team_a_local"]
     depends_on:
       hardhat-node:
         condition: service_healthy
@@ -149,19 +152,16 @@ services:
       # itself; the listener polls the node over the compose network instead.
       - WEB3_RPC_URL=http://hardhat-node:8545
       - REDIS_URL=redis://redis:6379
-      # The deploy step owns the addresses; reading them from its output file is
-      # what makes the very first `up` work without recreating this container.
-      - MOCK_DEPLOYMENTS_PATH=/app/mocks/contracts/deployments/localhost.json
+      # The install step owns the addresses; reading them from the deployment
+      # record is what makes the very first `up` work without recreating this
+      # container.
+      - MOCK_DEPLOYMENTS_PATH=/app/deployments/galileo.json
     volumes:
-      # Contract ABIs are git-ignored build output that hardhat-deploy writes into
-      # this checkout; the service reads them at startup.
-      - ./mocks:/app/mocks:ro
-    # `.env` carries the deployment addresses; the generated, git-ignored
-    # `.env.mock` is listed last so the local mock chain overrides them.
+      # Contract ABIs are Team A's exports; the services read them at startup.
+      - ./team_a_assets:/app/team_a_assets:ro
+      - ./deployments:/app/deployments:ro
     env_file:
       - path: .env
-        required: false
-      - path: .env.mock
         required: false
     healthcheck:
       # This is a worker, not a web server: reaching its state store is liveness.
@@ -173,7 +173,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      hardhat-deploy:
+      team-a-contracts:
         condition: service_completed_successfully
     restart: unless-stopped
 
@@ -191,15 +191,13 @@ services:
     environment:
       - WEB3_RPC_URL=http://hardhat-node:8545
       - REDIS_URL=redis://redis:6379
-      - MOCK_DEPLOYMENTS_PATH=/app/mocks/contracts/deployments/localhost.json
+      - MOCK_DEPLOYMENTS_PATH=/app/deployments/galileo.json
     volumes:
-      # Same compile-time ABI dependency as event-listener.
-      - ./mocks:/app/mocks:ro
-    # Same precedence as event-listener: `.env` first, generated mock overrides last.
+      # Same ABI dependency as event-listener.
+      - ./team_a_assets:/app/team_a_assets:ro
+      - ./deployments:/app/deployments:ro
     env_file:
       - path: .env
-        required: false
-      - path: .env.mock
         required: false
     healthcheck:
       # A settlement worker needs both its queue and its chain connection.
@@ -211,7 +209,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      hardhat-deploy:
+      team-a-contracts:
         condition: service_completed_successfully
     restart: unless-stopped
 

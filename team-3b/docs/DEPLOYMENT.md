@@ -47,17 +47,18 @@ docker compose logs -f            # everything at once, useful for startup order
 stops at the first failure:
 
 1. **Services.** Every long-running service reports `healthy`, and the one-shot
-   jobs (`hardhat-deploy`, `seed-model`, `fl-orchestrator`) exited 0. The script
+   jobs (`team-a-contracts`, `seed-model`, `fl-orchestrator`) exited 0. The script
    waits up to `SMOKE_WAIT_TIMEOUT` seconds (default 180).
 2. **Redis.** `PING` answers `PONG`.
-3. **Chain.** The Hardhat node answers JSON-RPC, the contracts recorded in
-   `mocks/contracts/deployments/localhost.json` have code on chain, and the
+3. **Chain.** The Hardhat node answers JSON-RPC with Team A's chain id, the
+   contracts recorded in `deployments/galileo.json` have code on chain, and the
    event-listener's environment holds those same addresses.
 4. **Inference.** The inference engine serves the seeded `toy_linear` model and
    returns an execution receipt.
-5. **Dispatch.** A new task is created on the deployed contracts, and the running
-   event-listener records it as dispatched within `SMOKE_TASK_TIMEOUT` seconds
-   (default 60). Set `SMOKE_SKIP_TRIGGER=1` to skip this step.
+5. **Dispatch.** A task is created and funded on Team A's contracts
+   (`python -m scripts.ops.trigger_team_a_task`), and the running event-listener
+   records it as dispatched within `SMOKE_TASK_TIMEOUT` seconds (default 60). Set
+   `SMOKE_SKIP_TRIGGER=1` to skip this step.
 
 A healthy run ends with `== smoke_test_compose: end ==`. Every check prints one
 line:
@@ -98,20 +99,77 @@ team's deployment. The compose file overrides some values inside containers (for
 example `WEB3_RPC_URL` points at the `hardhat-node` service), so the stack works
 without editing `.env`.
 
-## Mock chain
+## Local chain: Team A's contracts
 
-The `hardhat-deploy` service runs once per boot. It compiles and deploys the stub
-contracts from `mocks/contracts/contracts/`, then publishes their addresses in two
-places, so services that start before the deploy finishes can still find them:
+The `team-a-contracts` service runs once per boot. It does **not** compile or
+deploy a stand-in: Team A ship ABIs and deployed addresses, not source, so
+`scripts/ops/install_team_a_local.py` replays their deployed runtime bytecode
+(`team_a_assets/bytecode.json`) onto the local node with `hardhat_setCode` at the
+same Galileo addresses, then restores the constructor state — owners, the escrow
+token (an immutable baked into the bytecode), the escrow↔TaskManager↔Settlement
+wiring, and the Prover allow-list. The node in `chain/` runs `chainId: 16602`, so
+the same environment profile works locally and on Galileo.
 
-1. `.env.mock` at the repo root, read by the listener and submitter through their
-   `env_file` entry.
-2. `mocks/contracts/deployments/localhost.json`, read by `Settings` when
-   `MOCK_DEPLOYMENTS_PATH` is set (compose sets it).
+The listener and submitter read the addresses from the committed
+`deployments/galileo.json` (via `MOCK_DEPLOYMENTS_PATH`, a historical name), so
+nothing is generated and a fresh boot needs no manual copies. Create and fund a
+task yourself with:
 
-The deploy also creates one task, so the first boot already produces a dispatched
-task. Resetting the chain (`docker compose down -v`) changes the addresses; the
-next `up` rewrites both files.
+```bash
+python -m scripts.ops.trigger_team_a_task
+```
+
+## Team A's Galileo deployment
+
+The contract interface is no longer a mock assumption. Team A deployed to the 0G
+Galileo testnet (chain id **16602**) and shipped bare ABI exports in
+`team_a_assets/`; `deployments/galileo.json` records the addresses in the names
+`common/config.py` reads. See [INTEGRATION_CONTRACTS.md](INTEGRATION_CONTRACTS.md)
+for the confirmed signatures and [INTEGRATION_LOG.md](INTEGRATION_LOG.md) for open
+drift.
+
+Nothing is copied into the image: the services read the same directories you can
+inspect, so the handoff stays auditable. The default local profile already runs
+Team A's contracts; to reach the real testnet instead, point the same profile at
+their RPC:
+
+```bash
+# 1. Fill WEB3_RPC_URL/WEB3_WS_URL from Team A and export the profile.
+set -a; . deployments/team-a.env.example; set +a
+
+# 2. Supply the funded signer key through a secure channel (never in the repo).
+export PROOF_SUBMITTER_PRIVATE_KEY=...
+
+# 3. Run the two on-chain services against it.
+python -m event_listener.runner
+python -m proof_submitter.runner
+```
+
+The differences from the default local profile are all configuration:
+
+| Variable | Local (`chain/`) | Galileo |
+| --- | --- | --- |
+| `WEB3_RPC_URL` / `WEB3_WS_URL` | `hardhat-node:8545` | Team A's endpoint (not yet published) |
+| `WEB3_CHAIN_ID` | `16602` (same as Galileo) | `16602` |
+| `CONTRACT_ARTIFACTS_DIR` | `team_a_assets` | `team_a_assets` |
+| `ESCROW_ARTIFACT` | `EscrowContract` | `EscrowContract` |
+| Addresses | `deployments/galileo.json` (bytecode replayed locally) | `deployments/galileo.json` |
+
+Three guards make a misconfigured switch loud instead of silent:
+
+- **Chain guard.** With `WEB3_CHAIN_ID` set, both services compare it with the RPC's
+  `eth_chainId` and exit on a mismatch, so Team A's addresses are never polled on a
+  local node.
+- **Prover allow-list.** `TaskManager.submitProofs` requires `isProver(signer)`. The
+  submitter checks it at startup and exits with the address and the exact
+  `setProver` call to make. Team A's record has `PROVER: null`, so this fires until
+  they allow-list the signer.
+- **Batch sizing.** `submitProofs` is bounded by `MAX_PROOF_BATCH`. The submitter
+  reads that limit and splits larger buffers, and it dead-letters only the entries
+  the contract rejects (`ProofRejected`) instead of resending accepted ones.
+
+`deployments/team-a.env.example` deliberately leaves the RPC URLs and the private
+key blank: they are the two things Team A has not delivered.
 
 ## Development overrides
 
@@ -175,11 +233,11 @@ scripts/ops/smoke_test_compose.sh
 
 `--remove-orphans` removes services that were deleted from the compose file.
 
-To force a fresh Hardhat compile and deploy, remove the git-ignored build output.
-The next `up` regenerates it:
+To force a fresh install of Team A's contracts, reset the node's state. The
+installer is idempotent and checks the bytecode on every boot, so nothing is
+cached on disk:
 
 ```bash
-rm -rf mocks/contracts/artifacts mocks/contracts/cache mocks/contracts/deployments .env.mock
 docker compose down -v
 docker compose up --build -d
 ```
@@ -225,10 +283,11 @@ SMOKE_WAIT_TIMEOUT=600 scripts/ops/smoke_test_compose.sh
 report `healthy`. The event-listener and proof-submitter healthchecks depend on
 Redis and, for the proof-submitter, the chain.
 
-**The smoke test says `dispatched` never appeared.** Check that the deploy ran:
-`mocks/contracts/deployments/localhost.json` should hold non-empty addresses, and
-`docker compose logs hardhat-deploy` should show `Deploying mock contracts`. Then
-check the listener log for the task id the smoke test printed.
+**The smoke test says `dispatched` never appeared.** Check that the install ran:
+`docker compose logs team-a-contracts` should end with
+`TaskManager.isProver(owner)=True`, and the addresses in
+`deployments/galileo.json` should have code on chain. Then check the listener log
+for the task id the smoke test printed.
 
 **`PROOF_SUBMISSION_FAILED_PERMANENTLY` in proof-submitter logs.** The submitter
 retries three times, then dead-letters the batch to the Redis list

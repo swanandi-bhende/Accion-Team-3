@@ -17,19 +17,22 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from common.exceptions import ConfigurationError
 
-MOCK_ADDRESS_KEYS = (
+DEPLOYMENT_ADDRESS_KEYS = (
     "TASK_MANAGER_ADDRESS",
     "ESCROW_ADDRESS",
     "PROOF_SUBMITTER_CONTRACT_ADDRESS",
 )
 # The all-zero address is the placeholder shipped in .env.example. It means "not
-# configured yet", so the mock deploy output replaces it.
+# configured yet", so a deployment record replaces it.
 PLACEHOLDER_ADDRESS = "0x" + "0" * 40
+# Same idea for keys: an all-zero key is a placeholder, not a signer. Treating it
+# as one makes eth_account refuse to sign (and the submitter crash at startup).
+PLACEHOLDER_PRIVATE_KEY = "0x" + "0" * 64
 
 
 class Settings(BaseSettings):
@@ -50,9 +53,29 @@ class Settings(BaseSettings):
     # --- Blockchain ---
     web3_ws_url: str | None = None
     web3_rpc_url: str | None = None
+    # Expected chain id. When set, the services refuse to start against a different
+    # chain instead of sending proofs into a local node that happens to answer.
+    web3_chain_id: int | None = None
     task_manager_address: str | None = None
     escrow_address: str | None = None
     mock_deployments_path: str | None = None
+    # Directory of contract ABIs. Both layouts are read: the Hardhat artifact
+    # tree (<Name>.sol/<Name>.json) and bare ABI exports (<Name>.abi.json).
+    # Team A's committed exports live in team_a_assets/, so this is the only
+    # input needed to read their ABIs. Relative paths resolve from the repo root.
+    contract_artifacts_dir: str = "team_a_assets"
+    # Artifact base names. Team A names the escrow EscrowContract, matching the
+    # exports and the deployment record.
+    task_manager_artifact: str = "TaskManager"
+    escrow_artifact: str = "EscrowContract"
+    proof_submitter_artifact: str = "TaskManager"
+    # Team A's TaskManager gates submitProofs on a Prover allow-list. Refusing to
+    # start when the signer is not on it turns a silent revert-and-DLQ loop into an
+    # immediate, actionable failure.
+    check_prover_allowlist: bool = True
+    # Address of Team A's ERC-20 bounty token (TEST on Galileo). Only needed to
+    # fund tasks; the listener and submitter never move tokens.
+    bounty_token_address: str | None = None
 
     # --- Proof submission ---
     proof_batch_window_s: float = 10.0
@@ -80,15 +103,35 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    @model_validator(mode="after")
-    def _adopt_mock_deployments(self) -> "Settings":
-        """Replace blank or placeholder contract addresses with the mock deploy output.
+    @field_validator("web3_chain_id", mode="before")
+    @classmethod
+    def _blank_chain_id_is_unset(cls, value: object) -> object:
+        """Treat ``WEB3_CHAIN_ID=`` (the .env.example default) as "no check"."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
-        ``docker compose up`` cannot know the mock addresses when it creates the
-        consumer containers, because the deploy step writes them afterwards. With
-        ``MOCK_DEPLOYMENTS_PATH`` pointing at that file, a first ``up`` therefore
-        resolves them without anyone copying values into ``.env``. A real address that
-        was configured explicitly always wins.
+    @field_validator("proof_submitter_private_key", mode="before")
+    @classmethod
+    def _placeholder_key_is_unset(cls, value: object) -> object:
+        """The zero key in .env.example means "no signer", not "sign with zeros".
+
+        Without this, the local mock (which signs with the node's unlocked account)
+        and a real deployment (which supplies a funded key) both break: eth_account
+        refuses an all-zero key, and the submitter crashes on the first batch.
+        """
+        if isinstance(value, str) and value.strip().lower() in ("", PLACEHOLDER_PRIVATE_KEY):
+            return ""
+        return value
+
+    @model_validator(mode="after")
+    def _adopt_deployment_record(self) -> "Settings":
+        """Replace blank or placeholder contract addresses with a deployment record.
+
+        Compose points ``MOCK_DEPLOYMENTS_PATH`` (a historical name) at Team A's
+        ``deployments/galileo.json``, so a fresh checkout resolves their addresses
+        without anyone copying values into ``.env``. An address that was configured
+        explicitly always wins.
         """
         if not self.mock_deployments_path:
             return self
@@ -96,7 +139,7 @@ class Settings(BaseSettings):
         if not deployments_file.exists():
             return self
         deployments = json.loads(deployments_file.read_text(encoding="utf-8"))
-        for key in MOCK_ADDRESS_KEYS:
+        for key in DEPLOYMENT_ADDRESS_KEYS:
             field = key.lower()
             current = getattr(self, field, None)
             if current in (None, "", PLACEHOLDER_ADDRESS) and deployments.get(key):
