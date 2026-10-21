@@ -7,9 +7,7 @@ proof or used for on-chain verification.
 """
 
 import asyncio
-import hashlib
 import hmac
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,12 +15,17 @@ from common.constants import SUPPORTED_ARCHITECTURES
 from common.exceptions import UnsupportedArchitectureError
 from common.model_registry import ModelRegistry
 from common.models import ExecutionReceipt, ProofArtifact
+from proof_generator.verifier import commitment_proof
 
 
 @dataclass(frozen=True)
 class CompiledCircuit:
+    """Circuit record for one architecture and the verification key path it points to.
+
+    With the development backend this is only a record: no circuit is compiled.
+    """
+
     architecture: str
-    circuit_ref: str
     verification_key_ref: str
 
 
@@ -31,7 +34,6 @@ class ZkMLProver:
 
     SUPPORTED_ARCHITECTURES = tuple(SUPPORTED_ARCHITECTURES)
     PROOF_TIMEOUT_S = 120.0
-    BACKEND_NAME = "development-commitment"
 
     def __init__(
         self,
@@ -66,7 +68,6 @@ class ZkMLProver:
             self.proving_key_store.mkdir(parents=True, exist_ok=True)
             circuit = CompiledCircuit(
                 architecture=model_arch,
-                circuit_ref=f"{self.BACKEND_NAME}:circuit:{model_arch}:v1",
                 verification_key_ref=str(self.proving_key_store / f"{model_arch}.vk"),
             )
             self._circuit_cache[model_arch] = circuit
@@ -89,10 +90,7 @@ class ZkMLProver:
             "model_hash": entry.hash,
             "architecture": architecture,
         }
-        canonical_inputs = json.dumps(public_inputs, sort_keys=True, separators=(",", ":")).encode()
-        commitment = hashlib.sha256(canonical_inputs).digest()
-        circuit_digest = hashlib.sha256(circuit.circuit_ref.encode()).digest()
-        proof_bytes = b"DEVCOMMITMENT1" + commitment + circuit_digest
+        proof_bytes = commitment_proof(public_inputs, architecture)
         return ProofArtifact(
             proof_bytes=proof_bytes,
             public_inputs=public_inputs,
@@ -104,10 +102,4 @@ class ZkMLProver:
         architecture = artifact.public_inputs.get("architecture")
         if architecture not in self.SUPPORTED_ARCHITECTURES:
             return False
-        canonical_inputs = json.dumps(artifact.public_inputs, sort_keys=True, separators=(",", ":")).encode()
-        expected = (
-            b"DEVCOMMITMENT1"
-            + hashlib.sha256(canonical_inputs).digest()
-            + hashlib.sha256(f"{self.BACKEND_NAME}:circuit:{architecture}:v1".encode()).digest()
-        )
-        return hmac.compare_digest(artifact.proof_bytes, expected)
+        return hmac.compare_digest(artifact.proof_bytes, commitment_proof(artifact.public_inputs, architecture))

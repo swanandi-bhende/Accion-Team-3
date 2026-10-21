@@ -22,6 +22,11 @@ from federated_learning.simulated_client import make_partitioned_client
 
 
 def client_fn(context: Context) -> Client:
+    """Build this node's client, selecting its data partition from the node config.
+
+    Reads ``partition-id`` and ``num-partitions`` from ``context.node_config``,
+    defaulting to partition 0 of 1.
+    """
     node_config = getattr(context, "node_config", {}) or {}
     partition_id = int(node_config.get("partition-id", 0))
     num_partitions = int(node_config.get("num-partitions", 1))

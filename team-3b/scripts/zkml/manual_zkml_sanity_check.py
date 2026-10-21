@@ -13,10 +13,16 @@ import fakeredis.aioredis as fakeredis
 from common.model_registry import ModelRegistry
 from common.models import ExecutionReceipt
 from proof_generator import ZkMLProver
+from proof_generator.verifier import BACKEND_NAME
 from tests.property.test_model_registry_prop import MockStorageBackend
 
 
 async def main() -> None:
+    """Run a development proof round trip for a toy linear model.
+
+    Uses fakeredis and a mock storage backend. The printed proof is a
+    development artifact, not a zero-knowledge proof.
+    """
     redis_client = fakeredis.FakeRedis(decode_responses=False)
     storage = MockStorageBackend()
     registry = ModelRegistry(redis_client, storage)
@@ -41,7 +47,7 @@ async def main() -> None:
     artifact = await prover.generate_proof(receipt)
     elapsed = time.perf_counter() - started
 
-    print(f"backend={prover.BACKEND_NAME}")
+    print(f"backend={BACKEND_NAME}")
     print(f"proof_bytes={len(artifact.proof_bytes)}")
     print(f"generation_seconds={elapsed:.6f}")
     print(f"verified={prover.verify_proof(artifact)}")

@@ -61,11 +61,17 @@ class RegressionClient(NumPyClient):
         self._bias = np.zeros((1,), dtype=np.float64)
 
     def get_parameters(self, config: dict[str, Scalar]) -> NDArrays:
+        """Return copies of the local weight matrix and bias."""
         return [self._weights.copy(), self._bias.copy()]
 
     def fit(
         self, parameters: NDArrays, config: dict[str, Scalar]
     ) -> tuple[NDArrays, int, dict[str, Scalar]]:
+        """Run ``epochs`` full-batch gradient steps from the given global parameters.
+
+        Returns the updated weights and bias, the local sample count, and the
+        post-training MSE under ``loss``.
+        """
         weights = np.asarray(parameters[0], dtype=np.float64).reshape(self._weights.shape)
         bias = np.asarray(parameters[1], dtype=np.float64).reshape(self._bias.shape)
         for _ in range(self.epochs):
@@ -79,6 +85,10 @@ class RegressionClient(NumPyClient):
     def evaluate(
         self, parameters: NDArrays, config: dict[str, Scalar]
     ) -> tuple[float, int, dict[str, Scalar]]:
+        """Compute the mean squared error of the given parameters on the local partition.
+
+        Returns the MSE, the local sample count, and ``{"mse": mse}``.
+        """
         weights = np.asarray(parameters[0], dtype=np.float64).reshape(self._weights.shape)
         bias = np.asarray(parameters[1], dtype=np.float64).reshape(self._bias.shape)
         mse = float(np.mean((self._features @ weights + bias - self._labels) ** 2))
@@ -86,6 +96,10 @@ class RegressionClient(NumPyClient):
 
 
 def make_simulated_clients(num_clients: int, seed: int = 0, **kwargs: Any) -> list[RegressionClient]:
+    """Build one ``RegressionClient`` per partition of a shared synthetic dataset.
+
+    Extra keyword arguments, such as ``epochs`` or ``learning_rate``, are passed to each client.
+    """
     partitions, _true_model = make_regression_partitions(num_clients, seed=seed)
     return [
         RegressionClient(f"client-{index}", features, labels, **kwargs)

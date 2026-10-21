@@ -50,4 +50,4 @@ scripts/zkml/ezkl_mlp_benchmark.py`. The measured result is written to
 
 ## Further Reading
 - **Requirements & Architecture:** See the design document in `/docs`.
-- **Known Gaps:** Refer to `ROADMAP.md` for items blocked on other teams.
+- **Known Gaps:** Refer to `docs/ROADMAP.md` for items blocked on other teams.

@@ -8,9 +8,14 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from common.config import Settings, get_settings
 from common.exceptions import UnsupportedFormatError
+from common.interfaces import StorageBackend
 from common.models import VerificationRequest, VerificationResponse
+from common.storage.ipfs_backend import IPFSBackend
 from verification.interface import VerificationInterface
+from verification.resolver import StorageProofResolver
+from verification.verifiers import ConcreteTEEVerifier, ConcreteZkMLVerifier
 
 
 def load_trusted_keys(path: str | None) -> dict[str, bytes]:
@@ -27,7 +32,22 @@ def load_trusted_keys(path: str | None) -> dict[str, bytes]:
     }
 
 
+def build_verification_interface(settings: Settings, storage: StorageBackend) -> VerificationInterface:
+    """Assemble the public verification path from trusted keys and storage."""
+    return VerificationInterface(
+        ConcreteTEEVerifier(trusted_public_keys=load_trusted_keys(settings.tee_trusted_keys_path)),
+        ConcreteZkMLVerifier(),
+        StorageProofResolver(storage=storage),
+    )
+
+
 def create_app(interface: VerificationInterface, timeout_s: float = 5.0) -> FastAPI:
+    """Build the FastAPI app that serves ``/verify`` and ``/health``.
+
+    Args:
+        interface: Verification path that handles each ``/verify`` request.
+        timeout_s: Seconds one verification may take before a 408 is returned.
+    """
     app = FastAPI(title="Verifiable AI Verification Interface")
 
     @app.exception_handler(UnsupportedFormatError)
@@ -65,16 +85,6 @@ def create_default_app(timeout_s: float = 5.0) -> FastAPI:
     and verifies zkML proofs, and rejects unverifiable TEE attestations as
     ``invalid_signature``.
     """
-    from common.config import get_settings
-    from common.storage.ipfs_backend import IPFSBackend
-    from verification.resolver import StorageProofResolver
-    from verification.verifiers import ConcreteTEEVerifier, ConcreteZkMLVerifier
-
     settings = get_settings()
     storage = IPFSBackend(node_url=settings.model_storage_url or "http://localhost:5001")
-    interface = VerificationInterface(
-        ConcreteTEEVerifier(trusted_public_keys=load_trusted_keys(settings.tee_trusted_keys_path)),
-        ConcreteZkMLVerifier(),
-        StorageProofResolver(storage=storage),
-    )
-    return create_app(interface, timeout_s=timeout_s)
+    return create_app(build_verification_interface(settings, storage), timeout_s=timeout_s)

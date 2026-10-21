@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import logging
 from collections.abc import Awaitable
 from typing import cast
 
@@ -9,10 +10,21 @@ from common.exceptions import IntegrityCheckFailedError, StorageUnavailableError
 from common.interfaces import StorageBackend
 from common.models import ModelEntry
 
+logger = logging.getLogger(__name__)
+
 
 class ModelRegistry:
+    """Redis-backed registry that maps model IDs to versioned storage CIDs.
+
+    Each version is a Redis hash holding its CID and SHA-256 hash, and a ``latest``
+    key points at the newest version. Model bytes live in the storage backend.
+    ``register`` re-reads them from storage and checks the hash before recording a version.
+    """
+
     UPLOAD_BACKOFF_BASE = 5.0
     UPLOAD_BACKOFF_MAX = 300.0
+    # With the backoff above, six attempts wait about 155 s in total before failing.
+    MAX_UPLOAD_ATTEMPTS = 6
 
     def __init__(self, redis_client: Redis, storage_backend: StorageBackend):
         self.redis = redis_client
@@ -93,13 +105,29 @@ class ModelRegistry:
         model_binary: bytes,
         architecture: str | None = None,
     ) -> str:
-        """Upload to decentralized storage with exponential backoff on failure."""
+        """Upload to decentralized storage, backing off exponentially between attempts.
+
+        Gives up after ``MAX_UPLOAD_ATTEMPTS`` and re-raises ``StorageUnavailableError``,
+        so a prolonged storage outage fails the caller instead of hanging it forever.
+        """
         delay = self.UPLOAD_BACKOFF_BASE
+        attempt = 0
         while True:
+            attempt += 1
             try:
                 cid = await self.storage.upload(model_binary)
                 await self.register(model_id, cid, model_binary, architecture=architecture)
                 return cid
-            except StorageUnavailableError:
+            except StorageUnavailableError as error:
+                if attempt >= self.MAX_UPLOAD_ATTEMPTS:
+                    logger.error("MODEL_UPLOAD_FAILED model_id=%s attempts=%s", model_id, attempt)
+                    raise
+                logger.warning(
+                    "MODEL_UPLOAD_RETRY model_id=%s attempt=%s delay_s=%s error=%s",
+                    model_id,
+                    attempt,
+                    delay,
+                    error,
+                )
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, self.UPLOAD_BACKOFF_MAX)

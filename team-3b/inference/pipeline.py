@@ -41,7 +41,6 @@ from common.exceptions import (
     TimeoutExceededError,
     UnsupportedArchitectureError,
 )
-from common.interfaces import StorageBackend
 from common.model_registry import ModelRegistry
 from common.models import ExecutionReceipt, InferenceRequest, VerificationRequest
 from common.storage.ipfs_backend import IPFSBackend
@@ -51,14 +50,8 @@ from inference.engine import InferenceEngine
 from inference.tee_runtime import TEERuntime
 from proof_generator.zkml_prover import ZkMLProver
 from proof_submitter.submitter import ProofSubmitter
-from verification.app import load_trusted_keys
-from verification.interface import VerificationInterface
-from verification.resolver import StorageProofResolver
-from verification.verifiers import (
-    ConcreteTEEVerifier,
-    ConcreteZkMLVerifier,
-    serialize_proof_artifact,
-)
+from verification.app import build_verification_interface
+from verification.verifiers import serialize_proof_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +100,7 @@ class TaskRecord:
     detail: str = ""
 
     def as_dict(self) -> dict[str, Any]:
+        """Return the correlation, outcome and timing fields as a plain dict."""
         return {
             "task_id": self.task_id,
             "execution_id": self.execution_id,
@@ -230,6 +224,7 @@ class Pipeline:
                 self._queue.task_done()
 
     async def stop(self) -> None:
+        """Cancel the worker tasks and wait for them to exit."""
         for worker in self._workers:
             worker.cancel()
         await asyncio.gather(*self._workers, return_exceptions=True)
@@ -541,6 +536,7 @@ def _summarize(values: list[float]) -> dict[str, float] | None:
     ordered = sorted(values)
 
     def percentile(fraction: float) -> float:
+        """Return the sorted value at the given fraction, without interpolation."""
         return ordered[min(len(ordered) - 1, int(fraction * len(ordered)))]
 
     return {
@@ -552,26 +548,14 @@ def _summarize(values: list[float]) -> dict[str, float] | None:
     }
 
 
-def build_verification_interface(
-    settings: Settings, storage: StorageBackend
-) -> VerificationInterface:
-    """Assemble the public verification path from trusted keys and storage."""
-    return VerificationInterface(
-        ConcreteTEEVerifier(trusted_public_keys=load_trusted_keys(settings.tee_trusted_keys_path)),
-        ConcreteZkMLVerifier(),
-        StorageProofResolver(storage=storage),
-    )
-
-
 def build_pipeline(settings: Settings | None = None, **overrides: Any) -> Pipeline:
     """Wire every stage from ``common/config.py`` — the one env source of truth.
 
     ``python -m inference.pipeline`` runs exactly this wiring, so the composed
     service and the integration tests cannot drift apart.
 
-    Contract note: ``TASK_MANAGER_ADDRESS`` / ``ESCROW_ADDRESS`` are Team A's
-    mock-chain deployments. Both contracts are read from that single TaskManager
-    artifact set, matching the event listener.
+    Contract ABIs are resolved from ``TASK_MANAGER_ARTIFACT`` and ``ESCROW_ARTIFACT``
+    in ``CONTRACT_ARTIFACTS_DIR``, the same inputs the event listener uses.
     """
     settings = settings or get_settings().require(
         "redis_url",
@@ -594,11 +578,11 @@ def build_pipeline(settings: Settings | None = None, **overrides: Any) -> Pipeli
     web3 = Web3(Web3.HTTPProvider(settings.web3_rpc_url))
     task_manager = web3.eth.contract(
         address=web3.to_checksum_address(settings.task_manager_address or ""),
-        abi=load_contract_abi("TaskManager"),
+        abi=load_contract_abi(settings.task_manager_artifact),
     )
     escrow = web3.eth.contract(
         address=web3.to_checksum_address(settings.escrow_address or ""),
-        abi=load_contract_abi("Escrow"),
+        abi=load_contract_abi(settings.escrow_artifact),
     )
     submitter = ProofSubmitter(
         web3,

@@ -5,11 +5,18 @@ from pydantic import BaseModel, model_validator
 
 
 class InferenceRequest(BaseModel):
+    """Request to run a registered model on one input payload."""
+
     model_id: str
     input_data: bytes
     task_id: str | None = None
 
 class ExecutionReceipt(BaseModel):
+    """Record of one inference run, with hashes of its input and output.
+
+    The zkML prover takes a receipt as input when it generates a proof.
+    """
+
     execution_id: str
     model_id: str
     model_cid: str
@@ -19,6 +26,12 @@ class ExecutionReceipt(BaseModel):
     timestamp: float
 
 class AttestationReport(BaseModel):
+    """Signed statement from an enclave about one inference run.
+
+    Carries the enclave measurement and signer identity, the input and output
+    hashes, and the signature over them.
+    """
+
     enclave_measurement: str
     signer_identity: str
     input_hash: str
@@ -27,12 +40,22 @@ class AttestationReport(BaseModel):
     timestamp: float
 
 class ProofArtifact(BaseModel):
+    """zkML proof for one execution, with the public inputs needed to check it.
+
+    ``verification_key_ref`` is a reference to the verification key the verifier uses.
+    """
+
     proof_bytes: bytes
     public_inputs: dict
     verification_key_ref: str
 
 
 class VerificationRequest(BaseModel):
+    """Request asking a verifier to check a proof.
+
+    The proof may be sent inline as ``proof_bytes`` or referenced by ``proof_reference``.
+    """
+
     proof_format: str
     public_inputs: dict
     proof_bytes: bytes | None = None
@@ -40,6 +63,12 @@ class VerificationRequest(BaseModel):
 
 
 class VerificationResponse(BaseModel):
+    """Outcome of a proof verification.
+
+    A success carries ``public_inputs`` and no ``reason_code``. A failure carries
+    ``reason_code`` and no ``public_inputs``.
+    """
+
     result: bool
     timestamp: float
     public_inputs: dict | None = None
@@ -47,6 +76,12 @@ class VerificationResponse(BaseModel):
 
     @model_validator(mode="after")
     def validate_result_fields(self) -> "VerificationResponse":
+        """Check that the result fields match the outcome.
+
+        Raises:
+            ValueError: If a success lacks ``public_inputs`` or sets ``reason_code``,
+                or if a failure sets ``public_inputs`` or lacks ``reason_code``.
+        """
         if self.result and (self.public_inputs is None or self.reason_code is not None):
             raise ValueError("successful verification requires public_inputs only")
         if not self.result and (self.public_inputs is not None or self.reason_code is None):
@@ -54,6 +89,12 @@ class VerificationResponse(BaseModel):
         return self
 
 class ModelEntry(BaseModel):
+    """One stored version of a model, as resolved from the registry.
+
+    ``binary`` stays None when the entry comes from ``ModelRegistry.get``, which
+    returns only the CID and hash.
+    """
+
     model_id: str
     version: int
     cid: str
@@ -62,6 +103,8 @@ class ModelEntry(BaseModel):
     architecture: str | None = None
 
 class FLTaskConfig(BaseModel):
+    """Configuration for one federated-learning training task and its aggregation strategy."""
+
     task_id: str
     num_clients: int
     num_rounds: int
@@ -83,6 +126,12 @@ class FLTaskConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_strategy_parameters(self) -> "FLTaskConfig":
+        """Check that the aggregation and differential-privacy tuning values are in range.
+
+        Raises:
+            ValueError: If a tuning value is out of range, including
+                ``min_available_clients`` outside ``1..num_clients``.
+        """
         if not 0 <= self.trim_fraction < 0.5:
             raise ValueError("trim_fraction must be in [0, 0.5)")
         if self.num_malicious_clients < 0:
@@ -94,6 +143,11 @@ class FLTaskConfig(BaseModel):
         return self
 
 class RoundProvenance(BaseModel):
+    """Provenance record for one federated-learning round.
+
+    The strategies keep these per task in a Redis list.
+    """
+
     round_number: int
     participating_clients: int
     aggregation_strategy: str

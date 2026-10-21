@@ -53,11 +53,13 @@ class InMemoryStorage(StorageBackend):
         self.store: dict[str, bytes] = {}
 
     async def upload(self, data: bytes) -> str:
+        """Store data in memory and return a content-derived CID."""
         cid = "Qm" + hashlib.sha256(data).hexdigest()
         self.store[cid] = data
         return cid
 
     async def retrieve(self, cid: str) -> bytes:
+        """Return the bytes stored under cid; raises KeyError if it is unknown."""
         return self.store[cid]
 
 
@@ -71,11 +73,16 @@ class SlowRegressionClient(RegressionClient):
     def fit(
         self, parameters: NDArrays, config: dict[str, Scalar]
     ) -> tuple[NDArrays, int, dict[str, Scalar]]:
+        """Sleep for ``delay`` seconds, then run the regular local fit."""
         time.sleep(self.delay)
         return super().fit(parameters, config)
 
 
 async def main() -> None:
+    """Run the crash-test training job configured by environment variables.
+
+    Prints the final model CID once training completes.
+    """
     redis_client = redis.from_url(
         os.environ.get("REDIS_URL", "redis://localhost:6379"), decode_responses=False
     )

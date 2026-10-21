@@ -89,14 +89,9 @@ async def test_timeout_error_branch_is_raised(monkeypatch: pytest.MonkeyPatch) -
 
 @pytest.mark.asyncio
 async def test_redis_reconnects_after_client_close() -> None:
-    redis_client = __import__("redis.asyncio", fromlist=["Redis"]).Redis.from_url(
-        "redis://localhost:6379", decode_responses=False
-    )
+    server = fakeredis.FakeServer()
+    redis_client = fakeredis.FakeRedis(server=server, decode_responses=False)
     try:
-        try:
-            await redis_client.ping()
-        except Exception:
-            pytest.skip("Redis service is not available")
 
         storage = MockStorageBackend()
         registry = ModelRegistry(redis_client, storage)
@@ -105,9 +100,7 @@ async def test_redis_reconnects_after_client_close() -> None:
         await registry.register("restart-resilience", cid, model_binary)
 
         await redis_client.close()
-        redis_client = __import__("redis.asyncio", fromlist=["Redis"]).Redis.from_url(
-            "redis://localhost:6379", decode_responses=False
-        )
+        redis_client = fakeredis.FakeRedis(server=server, decode_responses=False)
         registry.redis = redis_client
 
         entry = await registry.get("restart-resilience")

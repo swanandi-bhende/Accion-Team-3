@@ -63,3 +63,6 @@ data/zkml_spike/*
 *.swp
 *.swo
 .DS_Store
+
+# Tooling
+.freebuff/

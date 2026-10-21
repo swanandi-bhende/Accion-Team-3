@@ -58,6 +58,24 @@ the marker is then removed in the same change, together with the entry's status.
 - **Raised with:** Team A, 2026-10-21 — who accepts the bid for tasks our prover serves, and should the prover be the worker (bid + accept) rather than a third party?
 - **Status:** raised (blocked on Team A).
 
+### DRIFT-012: the inference response does not echo `task_id`
+- **Documented:** `INTERFACES.md` row 9 and the Team C handoff expect the response to carry the request's `task_id`, so the answer can be matched to the task (Step 2.4).
+- **Observed:** `ExecutionReceipt` (`common/models.py`) has no `task_id` field, so `POST /inference` returns a receipt that cannot be joined to its request without the caller's own state.
+- **Impact:** Team C cannot correlate responses to tasks from the response alone. The cross-team driver keeps the task id on its side for this reason.
+- **Status:** open (not yet discussed with Team C).
+
+### DRIFT-013: `ProofRejected` reason codes are not documented
+- **Documented:** `INTEGRATION_CONTRACTS.md` §4 gives `ProofRejected(bytes32 indexed taskId, uint8 reason)` but not what each `reason` value means.
+- **Observed (2026-10-21, a throwaway Hardhat node running Team A's bytecode):** resubmitting a proof that the contract already accepted emits `ProofRejected` with `reason=1`. Submitting a proof for a task that was never created also emits `reason=1`. The event alone cannot tell the two cases apart.
+- **Impact:** the submitter cannot classify a rejection. It now checks `getProof` before each send so it never resends a recorded proof, but other rejections still get dead-lettered without a reason.
+- **Status:** open. Questions for Team A: what each `reason` value means, and whether a duplicate submission is an intentional rejection.
+
+### DRIFT-014: no agreed mapping from a task to a registry model id
+- **Documented:** `INTEGRATION_CONTRACTS.md` gives `descriptionHash` as `bytes32` but does not say what it hashes. `INTERFACES.md` row 10 leaves the model-id → registry mapping open.
+- **Observed:** the listener dispatches with `model_id = descriptionHash.hex()` (`inference/pipeline.py`), so a task runs only if the registry holds a model under that hex string. The cross-team driver creates tasks with `descriptionHash = keccak(model_id)`, so its registry key would be `keccak(model_id).hex()`, not Team C's id. The rehearsal succeeded only because it used a model id that is already registered.
+- **Impact:** a real Team C request will not resolve in our registry until both sides agree the mapping.
+- **Status:** open. Proposed rule for discussion: the registry key is Team C's model id, and Team A's `descriptionHash` is `keccak(model_id)`. This is a proposal, not an agreement.
+
 ## Resolved entries
 
 ### DRIFT-001: `taskId` is `bytes32`, not `uint256`

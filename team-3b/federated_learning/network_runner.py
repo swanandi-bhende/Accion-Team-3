@@ -41,8 +41,6 @@ from common.models import FLTaskConfig, RoundProvenance
 from federated_learning.simulated_client import make_partitioned_client
 from federated_learning.strategies import ProvenanceStrategy, build_strategy
 
-DEFAULT_REDIS_URL = "redis://localhost:6379"
-
 
 def build_network_strategy(
     config: FLTaskConfig,
@@ -127,6 +125,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse command-line arguments and run either the gRPC server or one gRPC client.
+
+    Args:
+        argv: Arguments without the program name, or ``None`` to read ``sys.argv``.
+    """
     args = _build_parser().parse_args(argv)
 
     if args.role == "client":

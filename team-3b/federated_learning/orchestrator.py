@@ -34,12 +34,11 @@ from flwr.common import (
     parameters_to_ndarrays,
 )
 from flwr.server.client_proxy import ClientProxy
-from flwr.server.strategy import Strategy
 from redis.asyncio import Redis
 
 from common.model_registry import ModelRegistry
 from common.models import FLTaskConfig, RoundProvenance
-from federated_learning.strategies import STRATEGY_BUILDERS as _STRATEGY_BUILDERS
+from federated_learning.strategies import build_strategy, provenance_key
 from federated_learning.weights import (
     parameters_hash,
     serialize_parameters,
@@ -59,6 +58,11 @@ class NoClientsRespondedError(RuntimeError):
 
 @dataclass
 class TrainingResult:
+    """Outcome of a completed training run.
+
+    ``model_cid`` is the ID the Model Registry returned for the uploaded model,
+    and ``model_hash`` is the SHA-256 of its serialized bytes.
+    """
     model_cid: str
     model_hash: str
     final_parameters: list[np.ndarray]
@@ -86,14 +90,15 @@ class LocalFlowerServer:
 
     @property
     def client_ids(self) -> list[str]:
+        """Ids of the registered clients in roster order.
+
+        Clients without a ``client_id`` attribute are labelled ``client-<index>``.
+        """
         return [getattr(client, "client_id", f"client-{index}") for index, client in enumerate(self.clients)]
 
 
 class FederatedLearningOrchestrator:
     """Drive Flower federated-learning rounds and persist the resulting model."""
-
-    STRATEGY_BUILDERS = _STRATEGY_BUILDERS
-    PROVENANCE_KEY_PREFIX = "fl:provenance:"
 
     def __init__(
         self,
@@ -112,17 +117,6 @@ class FederatedLearningOrchestrator:
         self.model_id = model_id
         self.architecture = architecture
         self.clock = clock
-
-    def _build_strategy(self, config: FLTaskConfig) -> Strategy:
-        """Select the aggregation strategy, failing loudly on unknown names."""
-        name = (config.aggregation_strategy or "").lower()
-        builder = self.STRATEGY_BUILDERS.get(name)
-        if builder is None:
-            raise ValueError(
-                f"Unknown aggregation strategy: {config.aggregation_strategy!r}. "
-                f"Supported: {sorted(self.STRATEGY_BUILDERS)}"
-            )
-        return builder(config)
 
     def _initial_parameters(self) -> list[np.ndarray]:
         return [np.asarray(parameter, dtype=np.float64) for parameter in self.clients[0].get_parameters({})]
@@ -189,12 +183,12 @@ class FederatedLearningOrchestrator:
     async def _persist_provenance(self, task_id: str, record: RoundProvenance) -> None:
         await cast(
             Awaitable[int],
-            self.redis.rpush(f"{self.PROVENANCE_KEY_PREFIX}{task_id}", record.model_dump_json()),
+            self.redis.rpush(provenance_key(task_id), record.model_dump_json()),
         )
 
     async def run_training(self, config: FLTaskConfig) -> TrainingResult:
         """Run every configured round and store the final model."""
-        strategy = self._build_strategy(config)
+        strategy = build_strategy(config)
         server = LocalFlowerServer(self.clients, self._initial_parameters())
         provenance: list[RoundProvenance] = []
 

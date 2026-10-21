@@ -98,6 +98,11 @@ def build_strategy(config: FLTaskConfig) -> Strategy:
     return builder(config)
 
 
+def provenance_key(task_id: str) -> str:
+    """Redis list holding every ``RoundProvenance`` record for one task."""
+    return f"fl:provenance:{task_id}"
+
+
 class ProvenanceStrategy(Strategy):
     """Wrap a Flower strategy so every aggregated round is recorded.
 
@@ -128,16 +133,19 @@ class ProvenanceStrategy(Strategy):
         return getattr(self._inner, name)
 
     def initialize_parameters(self, client_manager: ClientManager) -> Parameters | None:
+        """Return the initial global parameters from the wrapped strategy."""
         return self._inner.initialize_parameters(client_manager)
 
     def configure_fit(
         self, server_round: int, parameters: Parameters, client_manager: ClientManager
     ) -> list[tuple[ClientProxy, FitIns]]:
+        """Return the fit instructions for the round from the wrapped strategy."""
         return self._inner.configure_fit(server_round, parameters, client_manager)
 
     def configure_evaluate(
         self, server_round: int, parameters: Parameters, client_manager: ClientManager
     ) -> list[tuple[ClientProxy, EvaluateIns]]:
+        """Return the evaluation instructions for the round from the wrapped strategy."""
         return self._inner.configure_evaluate(server_round, parameters, client_manager)
 
     def aggregate_evaluate(
@@ -146,11 +154,13 @@ class ProvenanceStrategy(Strategy):
         results: list[tuple[ClientProxy, EvaluateRes]],
         failures: list[tuple[ClientProxy, EvaluateRes] | BaseException],
     ) -> tuple[float | None, dict[str, Scalar]]:
+        """Aggregate evaluation results with the wrapped strategy. No provenance is recorded."""
         return self._inner.aggregate_evaluate(server_round, results, failures)
 
     def evaluate(
         self, server_round: int, parameters: Parameters
     ) -> tuple[float, dict[str, Scalar]] | None:
+        """Run server-side evaluation with the wrapped strategy."""
         return self._inner.evaluate(server_round, parameters)
 
     def aggregate_fit(
@@ -159,6 +169,11 @@ class ProvenanceStrategy(Strategy):
         results: list[tuple[ClientProxy, FitRes]],
         failures: list[tuple[ClientProxy, FitRes] | BaseException],
     ) -> tuple[Parameters | None, dict[str, Scalar]]:
+        """Aggregate fit results with the wrapped strategy and record the round's provenance.
+
+        A ``RoundProvenance`` is appended to ``records`` and passed to ``on_record``
+        only when the wrapped strategy returns parameters.
+        """
         started = self.clock()
         parameters, metrics = self._inner.aggregate_fit(server_round, results, failures)
         if parameters is not None:

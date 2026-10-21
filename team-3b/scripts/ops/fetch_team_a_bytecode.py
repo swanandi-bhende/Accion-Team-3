@@ -22,7 +22,13 @@ ADDRESSES = {
 
 
 def rpc(method: str, params: list[Any], timeout: int = 30) -> Any:
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    """Send one JSON-RPC request to the Galileo endpoint and return its result.
+
+    Returns:
+        The ``result`` field of the response. Raises RuntimeError if the
+        response carries an ``error`` field.
+    """
+    body =json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
     req = urllib.request.Request(RPC, data=body, headers={"content-type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as response:
         payload = json.load(response)
@@ -32,7 +38,8 @@ def rpc(method: str, params: list[Any], timeout: int = 30) -> Any:
 
 
 def main() -> None:
-    chain_id = rpc("eth_chainId", [])
+    """Write Team A's runtime bytecode from Galileo to team_a_assets/bytecode.json."""
+    chain_id =rpc("eth_chainId", [])
     block = rpc("eth_getBlockByNumber", ["latest", False])
     out = {
         "network": "0G Galileo testnet",

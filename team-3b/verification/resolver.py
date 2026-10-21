@@ -9,12 +9,27 @@ class ProofResolutionError(Exception):
 
 
 class StorageProofResolver:
+    """Resolve proof references from storage or from submitted transactions.
+
+    CIDs (``Qm`` or ``bafy`` prefixes) are read from ``storage``. ``0x`` transaction
+    hashes are decoded only when both ``web3`` and ``contract`` are configured.
+    """
+
     def __init__(self, storage: Any, web3: Any = None, contract: Any = None):
         self.storage = storage
         self.web3 = web3
         self.contract = contract
 
     async def resolve(self, reference: str) -> bytes:
+        """Fetch the proof bytes that ``reference`` points to.
+
+        Returns:
+            The stored bytes for a CID, or JSON-encoded proof hashes for a
+            ``submitProofs`` transaction.
+
+        Raises:
+            ProofResolutionError: If the reference is unsupported, missing, or cannot be decoded.
+        """
         if reference.startswith("Qm") or reference.startswith("bafy"):
             try:
                 content: bytes = await self.storage.retrieve(reference)

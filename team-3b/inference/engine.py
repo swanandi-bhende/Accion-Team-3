@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import os
 import time
 import uuid
 
@@ -12,21 +13,44 @@ from inference.tee_runtime import TEERuntime
 
 
 class InferenceEngine:
+    """Run model inference in the TEE and return a receipt for each execution.
+
+    Every successful execution is also appended to the ``inference:audit_log`` Redis stream.
+
+    Args:
+        registry: Looks up registered models by id and fetches their binaries from storage.
+        tee: Runtime that executes the model inside the enclave.
+        redis_client: Redis connection used for the audit stream.
+        timeout_s: Seconds allowed for one TEE execution before TimeoutExceededError is raised.
+        sealed_key: AES-GCM key for encrypted models. A fresh random 256-bit key is generated if omitted.
+    """
+
     def __init__(
         self,
         registry: ModelRegistry,
         tee: TEERuntime,
         redis_client: Redis,
         timeout_s: float = 30.0,
-        sealed_key: bytes = b"mock_sealed_key_0123456789abcdef"
+        sealed_key: bytes | None = None,
     ):
         self.registry = registry
         self.tee = tee
         self.redis = redis_client
         self.timeout = timeout_s
-        self.sealed_key = sealed_key
+        # No key is provisioned in the simulator, so each engine gets a fresh 256-bit key
+        # rather than a secret baked into the source. Real TEE key provisioning goes here.
+        self.sealed_key = sealed_key if sealed_key is not None else os.urandom(32)
 
     async def execute(self, request: InferenceRequest) -> ExecutionReceipt:
+        """Fetch the requested model, run it in the TEE and return a receipt.
+
+        The receipt holds the execution id, the model CID, SHA-256 hashes of the input
+        and output, and the output itself.
+
+        Raises:
+            ModelNotFoundError: If the model id is not registered.
+            TimeoutExceededError: If the TEE run exceeds the engine's timeout.
+        """
 
         model_entry = await self.registry.get(request.model_id)
         if model_entry is None:

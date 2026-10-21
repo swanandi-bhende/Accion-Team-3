@@ -24,12 +24,14 @@ def serialize_parameters(parameters: Sequence[np.ndarray]) -> bytes:
 
 
 def deserialize_parameters(payload: bytes) -> list[np.ndarray]:
+    """Rebuild a parameter list from bytes written by ``serialize_parameters``."""
     buffer = io.BytesIO(payload)
     count = int(np.load(buffer)[0])
     return [np.load(buffer) for _ in range(count)]
 
 
 def parameters_hash(parameters: Sequence[np.ndarray]) -> str:
+    """Return the SHA-256 hex digest of the serialized parameter list."""
     return hashlib.sha256(serialize_parameters(parameters)).hexdigest()
 
 

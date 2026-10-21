@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 
 
 class EventListener:
+    """Follow TaskCreated and TaskFunded events and dispatch each task once both are seen.
+
+    Progress is persisted in Redis per block and per task, so polling resumes from the
+    last processed block after a restart. A task is marked dispatched and persisted
+    before the dispatch callable runs, so it is not dispatched twice.
+    """
+
     LAST_BLOCK_KEY = "event_listener:last_block"
     TASK_STATE_PREFIX = "event_listener:task:"
     RECONNECT_BASE = 1.0
@@ -212,6 +219,10 @@ class EventListener:
         return await result if inspect.isawaitable(result) else result
 
     async def cleanup_pending(self) -> int:
+        """Forget tasks tracked for longer than PENDING_TTL_SECONDS.
+
+        Removes them from memory and from Redis. Returns the number removed.
+        """
         cutoff = self.clock() - self.PENDING_TTL_SECONDS
         abandoned = [task_id for task_id, started in self._pending_since.items() if started < cutoff]
         for task_id in abandoned:
@@ -240,6 +251,13 @@ class EventListener:
         return None
 
     async def start(self, poll_interval: float = 1.0) -> None:
+        """Poll the chain for new events until stop() is called.
+
+        Connection errors are retried rather than raised.
+
+        Args:
+            poll_interval: Seconds to wait between polls.
+        """
         await self._restore_task_states()
         self._connection_state = "connected"
         while not self._stop_requested:
@@ -264,6 +282,7 @@ class EventListener:
                     await self._reconnect_with_backoff(connect)
 
     async def status(self) -> dict[str, Any]:
+        """Return the last processed block, the number of tracked tasks and the connection state."""
         return {
             "last_processed_block": await self._get_last_processed_block(),
             "pending_tasks": len(self._task_events),

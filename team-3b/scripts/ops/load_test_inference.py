@@ -1,3 +1,9 @@
+"""Load-test the inference endpoint with concurrent requests and report latency.
+
+Fires ``--concurrency`` POST requests at ``/inference``, alternating the seeded
+``toy_linear`` model with an unknown one, then prints status counts and latency.
+"""
+
 import argparse
 import asyncio
 import base64
@@ -11,6 +17,12 @@ from httpx import AsyncClient
 async def fire_request(
     client: AsyncClient, url: str, model_id: str, payload_bytes: bytes, req_id: int
 ) -> tuple[int, int | str, float]:
+    """Send one inference request and time it.
+
+    Returns:
+        ``(req_id, status_code, seconds)``. If the request raised, the second
+        item is the exception message instead of a status code.
+    """
     payload = {
         "model_id": model_id,
         "input_data": base64.b64encode(payload_bytes).decode('utf-8'),
@@ -27,7 +39,8 @@ async def fire_request(
         return req_id, str(e), duration
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Load Test Inference Engine")
+    """Parse ``--url`` and ``--concurrency``, run the load test, and print a summary."""
+    parser =argparse.ArgumentParser(description="Load Test Inference Engine")
     parser.add_argument("--url", type=str, default="http://localhost:8000", help="API Base URL")
     parser.add_argument("--concurrency", type=int, default=50, help="Number of concurrent requests")
     args = parser.parse_args()

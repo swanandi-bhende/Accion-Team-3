@@ -162,7 +162,9 @@ def test_real_fl_round_completes_after_a_client_disconnects() -> None:
     assert [record.round_number for record in records] == [1, 2, 3, 4]
 
     participation = [record.participating_clients for record in records]
-    assert participation[0] == NUM_CLIENTS, "round 1 should have the full roster"
+    # Round 1 starts as soon as the quorum (min_available_clients) has registered, so a
+    # late third client can be missing from it. The quorum is the guarantee under test.
+    assert participation[0] >= NUM_CLIENTS - 1, f"round 1 below quorum: {participation}"
     assert min(participation) == NUM_CLIENTS - 1, f"reduced count not recorded: {participation}"
     assert participation[-1] == NUM_CLIENTS - 1, "later rounds should run with survivors"
     # The lost client caused a real aggregation failure to be surfaced, not a crash.

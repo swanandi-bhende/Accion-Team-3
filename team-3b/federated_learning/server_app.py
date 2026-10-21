@@ -28,7 +28,11 @@ from flwr.serverapp import ServerApp
 
 from common.config import get_settings
 from common.models import FLTaskConfig, RoundProvenance
-from federated_learning.strategies import ProvenanceStrategy, build_strategy
+from federated_learning.strategies import (
+    ProvenanceStrategy,
+    build_strategy,
+    provenance_key,
+)
 
 DEFAULT_REDIS_URL = "redis://localhost:6379"
 
@@ -56,7 +60,7 @@ def build_redis_recorder(
 ) -> Callable[[RoundProvenance], None]:
     """Return a synchronous callable that appends provenance records to Redis."""
     client = sync_redis.Redis.from_url(redis_url)
-    key = f"fl:provenance:{task_id}"
+    key = provenance_key(task_id)
 
     def record(provenance: RoundProvenance) -> None:
         client.rpush(key, provenance.model_dump_json())
@@ -65,6 +69,12 @@ def build_redis_recorder(
 
 
 def server_fn(context: Context) -> ServerAppComponents:
+    """Build the provenance-recording strategy and round config for the SuperLink server.
+
+    Task settings come from ``context.run_config`` (defaults apply when absent).
+    Provenance records are appended to Redis at ``get_settings().redis_url``,
+    falling back to ``redis://localhost:6379`` when it is unset.
+    """
     config = load_task_config(getattr(context, "run_config", None))
     strategy = ProvenanceStrategy(
         build_strategy(config),

@@ -13,6 +13,15 @@ from proof_submitter.submitter import ProofSubmitter
 
 
 async def main() -> None:
+    """Run the proof-submitter daemon until it receives SIGTERM or SIGINT.
+
+    Before starting, checks the chain ID and, when ``check_prover_allowlist`` is
+    set, that the signer is an authorised prover. On shutdown it flushes the
+    buffered proofs once before closing Redis.
+
+    Raises:
+        SystemExit: With status 1 when the signer is not an authorised prover.
+    """
     settings = get_settings().require(
         "web3_rpc_url", "proof_submitter_contract_address", "redis_url"
     )

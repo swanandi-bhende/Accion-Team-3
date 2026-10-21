@@ -36,19 +36,20 @@ PLACEHOLDER_PRIVATE_KEY = "0x" + "0" * 64
 
 
 class Settings(BaseSettings):
+    """Typed view of every environment variable the subsystem reads.
+
+    Values come from the process environment or ``.env``. Each entrypoint calls
+    :meth:`require` to check the variables it needs.
+    """
+
     # --- TEE ---
     tee_mode: str | None = None
-    tee_sealed_key_path: str | None = None
     tee_trusted_keys_path: str | None = None
     tee_inference_timeout_s: float = 30.0
 
     # --- Storage ---
     redis_url: str | None = None
-    model_storage_backend: str = "ipfs"
     model_storage_url: str | None = None
-    model_max_size_mb: int = 500
-    zerog_rpc_endpoint: str = "https://rpc-testnet.0g.ai"
-    zerog_private_key: str = ""
 
     # --- Blockchain ---
     web3_ws_url: str | None = None
@@ -73,9 +74,6 @@ class Settings(BaseSettings):
     # start when the signer is not on it turns a silent revert-and-DLQ loop into an
     # immediate, actionable failure.
     check_prover_allowlist: bool = True
-    # Address of Team A's ERC-20 bounty token (TEST on Galileo). Only needed to
-    # fund tasks; the listener and submitter never move tokens.
-    bounty_token_address: str | None = None
 
     # --- Proof submission ---
     proof_batch_window_s: float = 10.0
@@ -84,7 +82,6 @@ class Settings(BaseSettings):
 
     # --- zkML ---
     zkml_proving_key_store: str = "data/proving_keys"
-    zkml_supported_architectures: str | None = None
 
     # --- Federated learning ---
     fl_task_id: str = "fl-demo-task"
@@ -165,6 +162,11 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """Return the process-wide Settings instance, built once and cached.
+
+    Raises:
+        ConfigurationError: If the environment or ``.env`` holds an invalid value.
+    """
     try:
         return Settings()
     except ValueError as error:

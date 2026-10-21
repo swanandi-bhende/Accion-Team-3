@@ -12,6 +12,12 @@ MAX_PROOF_SIZE_DRIFT = 0.25
 
 
 def main() -> int:
+    """Compare the recorded EZKL benchmark result against its baselines.
+
+    Returns:
+        0 if every architecture verified and stayed within the drift limits,
+        1 otherwise.
+    """
     result = json.loads(RESULT_PATH.read_text())
     failures = []
     for benchmark in result["benchmarks"]:

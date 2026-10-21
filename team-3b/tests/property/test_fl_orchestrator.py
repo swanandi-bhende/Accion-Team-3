@@ -41,7 +41,11 @@ from federated_learning.orchestrator import (
     NoClientsRespondedError,
 )
 from federated_learning.simulated_client import make_simulated_clients
-from federated_learning.strategies import ProvenanceStrategy
+from federated_learning.strategies import (
+    STRATEGY_BUILDERS,
+    ProvenanceStrategy,
+    build_strategy,
+)
 from federated_learning.weights import (
     deserialize_parameters,
     serialize_parameters,
@@ -245,8 +249,7 @@ async def test_property_11_trained_model_is_stored_and_resolvable() -> None:
 # --------------------------------------------------------------------------- #
 
 def test_build_strategy_defaults_to_fedavg_with_fault_tolerant_minimum() -> None:
-    orchestrator, _, _, _ = build_orchestrator(make_simulated_clients(3))
-    strategy = orchestrator._build_strategy(FLTaskConfig(task_id="s", num_clients=3, num_rounds=1))
+    strategy = build_strategy(FLTaskConfig(task_id="s", num_clients=3, num_rounds=1))
 
     assert isinstance(strategy, FedAvg)
     assert strategy.min_fit_clients == 1
@@ -254,10 +257,8 @@ def test_build_strategy_defaults_to_fedavg_with_fault_tolerant_minimum() -> None
 
 
 def test_build_strategy_rejects_unknown_name_instead_of_silently_defaulting() -> None:
-    orchestrator, _, _, _ = build_orchestrator(make_simulated_clients(2))
-
     with pytest.raises(ValueError, match="Unknown aggregation strategy"):
-        orchestrator._build_strategy(
+        build_strategy(
             FLTaskConfig(task_id="s", num_clients=2, num_rounds=1, aggregation_strategy="definitely-not-a-strategy")
         )
 
@@ -290,11 +291,10 @@ def test_orchestrator_requires_at_least_one_client() -> None:
 
 
 def test_strategy_registry_is_extensible_without_touching_run_training() -> None:
-    orchestrator, _, _, _ = build_orchestrator(make_simulated_clients(2))
-    builders = type(orchestrator).STRATEGY_BUILDERS
+    builders = STRATEGY_BUILDERS
     builders["custom"] = lambda config: FedAvg(min_fit_clients=1, min_available_clients=1)
     try:
-        strategy = orchestrator._build_strategy(
+        strategy = build_strategy(
             FLTaskConfig(task_id="s", num_clients=2, num_rounds=1, aggregation_strategy="CUSTOM")
         )
         assert isinstance(strategy, FedAvg)
@@ -304,10 +304,9 @@ def test_strategy_registry_is_extensible_without_touching_run_training() -> None
 
 @pytest.mark.parametrize("strategy_name", ["fedavg", "fedmedian", "fedtrimmedavg", "krum", "dp_fedavg"])
 def test_every_registered_strategy_builds_and_aggregates(strategy_name: str) -> None:
-    orchestrator, _, _, _ = build_orchestrator(make_simulated_clients(5))
     config = FLTaskConfig(task_id="s", num_clients=5, num_rounds=1, aggregation_strategy=strategy_name)
 
-    strategy = orchestrator._build_strategy(config)
+    strategy = build_strategy(config)
     updates = [[np.array([[float(index)], [float(index) + 1.0]])] for index in range(5)]
     results = [
         (
@@ -390,7 +389,7 @@ class _NullAggregatingStrategy(FedAvg):
 @pytest.mark.asyncio
 async def test_run_training_fails_when_strategy_produces_no_parameters() -> None:
     orchestrator, _, _, _ = build_orchestrator(make_simulated_clients(2))
-    builders = type(orchestrator).STRATEGY_BUILDERS
+    builders = STRATEGY_BUILDERS
     builders["null-agg"] = lambda config: _NullAggregatingStrategy(
         min_fit_clients=1, min_available_clients=config.num_clients
     )

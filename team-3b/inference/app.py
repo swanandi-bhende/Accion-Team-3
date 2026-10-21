@@ -21,6 +21,10 @@ from inference.tee_runtime import TEERuntime
 
 
 def build_app_state(app: FastAPI) -> State:
+    """Create the Redis, storage, registry, TEE and engine objects on app.state.
+
+    Idempotent: returns the existing state unchanged if the engine is already built.
+    """
     if hasattr(app.state, "inference_engine"):
         return app.state
 
@@ -50,6 +54,7 @@ def build_app_state(app: FastAPI) -> State:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """FastAPI lifespan hook: build app state on startup, release the TEE and Redis on shutdown."""
     state = build_app_state(app)
     yield
     tee_runtime = getattr(state, "tee_runtime", None)
@@ -63,6 +68,7 @@ app = FastAPI(title="Inference Service", lifespan=lifespan)
 
 # Dependency Injector
 def get_inference_engine(request: Request) -> InferenceEngine:
+    """FastAPI dependency that returns the shared InferenceEngine, building app state if needed."""
     if not hasattr(request.app.state, "inference_engine"):
         build_app_state(request.app)
     engine: InferenceEngine = request.app.state.inference_engine
@@ -71,27 +77,39 @@ def get_inference_engine(request: Request) -> InferenceEngine:
 # Exception Handlers
 @app.exception_handler(ModelNotFoundError)
 async def model_not_found_handler(request: Request, exc: ModelNotFoundError) -> JSONResponse:
+    """Map ModelNotFoundError to a 404 JSON response."""
     return JSONResponse(status_code=404, content={"error": "ModelNotFound", "detail": str(exc)})
 
 @app.exception_handler(TimeoutExceededError)
 async def timeout_handler(request: Request, exc: TimeoutExceededError) -> JSONResponse:
+    """Map TimeoutExceededError to a 408 JSON response."""
     return JSONResponse(status_code=408, content={"error": "TimeoutExceeded", "detail": str(exc)})
 
 @app.exception_handler(TEEUnavailableError)
 async def tee_unavailable_handler(request: Request, exc: TEEUnavailableError) -> JSONResponse:
+    """Map TEEUnavailableError to a 503 JSON response."""
     return JSONResponse(status_code=503, content={"error": "TEEUnavailable", "detail": str(exc)})
 
 @app.exception_handler(IntegrityCheckFailedError)
 async def integrity_check_handler(request: Request, exc: IntegrityCheckFailedError) -> JSONResponse:
+    """Map IntegrityCheckFailedError to a 422 JSON response."""
     return JSONResponse(status_code=422, content={"error": "IntegrityCheckFailed", "detail": str(exc)})
 
 # Endpoints
 @app.post("/inference", response_model=ExecutionReceipt)
 async def execute_inference(request: InferenceRequest, engine: InferenceEngine = Depends(get_inference_engine)) -> ExecutionReceipt:
+    """Run one inference request and return its ExecutionReceipt.
+
+    Domain errors are turned into HTTP responses by the exception handlers above.
+    """
     return await engine.execute(request)
 
 @app.get("/health")
 async def health_check(request: Request) -> JSONResponse:
+    """Report service health as JSON.
+
+    Returns 503 unless Redis answers a ping. Storage is reported as up only in that case.
+    """
     if not hasattr(request.app.state, "tee_runtime") or not hasattr(request.app.state, "redis_client"):
         build_app_state(request.app)
 

@@ -73,9 +73,11 @@ class _IPFSAPI(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *args: Any) -> None:  # keep the smoke output readable
+        """Suppress the default per-request logging."""
         pass
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib naming
+        """Serve the IPFS ``add`` and ``cat`` calls; any other path gets a 404."""
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         if self.path.startswith("/api/v0/add"):
             cid = "Qm" + hashlib.sha256(raw).hexdigest()[:44]
@@ -166,6 +168,12 @@ def _check_artifacts(redis_client: Any, strategy: str, task_id: str, model_id: s
 
 
 def main() -> int:
+    """Run the runner for each aggregation case and check its durable outputs.
+
+    Returns:
+        0 if every case passes, 1 if any case fails, and 2 if the redis
+        package is missing or the isolated redis-server does not start.
+    """
     try:
         import redis
     except ImportError:

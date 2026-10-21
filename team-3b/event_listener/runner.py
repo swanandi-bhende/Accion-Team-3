@@ -11,6 +11,11 @@ from event_listener.listener import EventListener
 
 
 async def main() -> None:
+    """Run the event listener service until SIGTERM or SIGINT.
+
+    Sets up logging, checks the RPC chain id before polling, and closes the Redis
+    connection on exit.
+    """
     settings = get_settings().require("redis_url")
     # Without a configured handler the listener's INFO lines (startup, dispatch,
     # expiry) never reach `docker compose logs`; only warnings would.

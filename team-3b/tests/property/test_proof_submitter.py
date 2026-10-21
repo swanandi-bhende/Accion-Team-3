@@ -156,7 +156,9 @@ async def test_retry_succeeds_without_dlq() -> None:
         return "0xtx"
 
     instance._send_transaction = send  # type: ignore[method-assign, assignment]
-    await instance._submit_batch([await instance.submit_proof(*payload("retry"))])
+    pending = await instance.submit_proof(*payload("retry"))
+    instance._batch_timer.cancel()  # type: ignore[union-attr]
+    await instance._submit_batch([pending])
 
     assert calls == 2
     assert await instance.redis.llen(instance.DLQ_KEY) == 0
@@ -228,3 +230,28 @@ async def test_concurrent_failed_batches_append_distinct_dlq_entries() -> None:
 
     entries = [json.loads(raw.decode()) for raw in await instance.redis.lrange(instance.DLQ_KEY, 0, -1)]
     assert {entry["proofs"][0]["task_id"] for entry in entries} == {"concurrent-one", "concurrent-two"}
+
+
+@pytest.mark.asyncio
+async def test_retrying_a_failed_chunk_never_resends_an_accepted_chunk() -> None:
+    instance = submitter()
+    instance._max_batch_size = lambda: 2  # type: ignore[method-assign]
+    sent: list[list[str]] = []
+    failures_left = [1]
+
+    def send_chunk(proofs: list[PendingProof]) -> tuple[str, list[PendingProof]]:
+        task_ids = [proof.task_id for proof in proofs]
+        sent.append(task_ids)
+        if task_ids == ["third", "fourth"] and failures_left[0]:
+            failures_left[0] -= 1
+            raise RuntimeError("transient RPC failure")
+        return "0xtx", []
+
+    instance._send_chunk = send_chunk  # type: ignore[method-assign]
+    proofs = []
+    for task_id in ("first", "second", "third", "fourth"):
+        _, attestation, zkml_proof, model_cid = payload(task_id)
+        proofs.append(PendingProof(task_id, attestation, zkml_proof, model_cid, f"hash-{task_id}", "result"))
+
+    assert await instance._submit_batch(proofs) == "0xtx"
+    assert sent == [["first", "second"], ["third", "fourth"], ["third", "fourth"]]

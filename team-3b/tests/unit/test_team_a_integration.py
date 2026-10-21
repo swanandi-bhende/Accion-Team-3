@@ -222,7 +222,7 @@ async def test_batches_are_split_to_max_proof_batch() -> None:
     instance = submitter(FakeContract(functions))
     proofs = [pending(f"task-{index}") for index in range(5)]
 
-    await instance._send_transaction(proofs)
+    await instance._submit_batch(proofs)
 
     assert [len(call) for call in functions.calls] == [2, 2, 1]
 
@@ -233,7 +233,7 @@ async def test_contract_without_max_proof_batch_sends_one_transaction() -> None:
     instance = submitter(FakeContract(functions))
     proofs = [pending(f"task-{index}") for index in range(3)]
 
-    await instance._send_transaction(proofs)
+    await instance._submit_batch(proofs)
 
     assert [len(call) for call in functions.calls] == [3]
 

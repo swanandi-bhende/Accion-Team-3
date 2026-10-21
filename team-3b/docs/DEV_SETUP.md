@@ -34,17 +34,16 @@ cp .env.example .env
 
 ### Required environment keys
 
-`common/config.py` is the single source of truth for configuration. Every key
-below **has no default** — `Settings()` (and therefore `get_settings()`) raises a
-pydantic `ValidationError` if any of them is missing, so `.env` must define all
-of them before the Inference Engine starts.
+`common/config.py` is the single source of truth for configuration. `Settings`
+supplies defaults for most keys. Each service then calls
+`get_settings().require(...)` for the keys it uses, and refuses to start with one
+error that lists every missing key. The table lists the keys that must be set
+for the services that use them.
 
 | Key | Purpose |
 | --- | --- |
 | `TEE_MODE` | Attestation mode, e.g. `sgx` (simulated locally) |
-| `TEE_SEALED_KEY_PATH` | Path to the sealed TEE key material |
 | `REDIS_URL` | Redis connection string, e.g. `redis://localhost:6379` |
-| `MODEL_STORAGE_BACKEND` | `ipfs` or `zerog` |
 | `MODEL_STORAGE_URL` | Storage node URL, e.g. `http://localhost:5001` |
 | `WEB3_WS_URL` | WebSocket RPC used by the event listener |
 | `WEB3_RPC_URL` | HTTP RPC used by the proof submitter |
@@ -54,11 +53,9 @@ of them before the Inference Engine starts.
 | `PROOF_SUBMITTER_PRIVATE_KEY` | Key that signs proof submissions |
 | `PROOF_SUBMITTER_CONTRACT_ADDRESS` | Contract exposing `submitProofs` (Team A's `TaskManager`) |
 | `ZKML_PROVING_KEY_STORE` | Directory holding zkML proving keys |
-| `ZKML_SUPPORTED_ARCHITECTURES` | Comma-separated architectures with circuits |
 
 Optional keys with working defaults: `TEE_INFERENCE_TIMEOUT_S` (30),
-`MODEL_MAX_SIZE_MB` (500), `PROOF_BATCH_WINDOW_S` (10), `ZEROG_RPC_ENDPOINT`,
-`ZEROG_PRIVATE_KEY`.
+`PROOF_BATCH_WINDOW_S` (10).
 
 Read directly from the environment (not via `Settings`):
 `TEE_TRUSTED_KEYS_PATH` — a JSON map of `signer_id` to hex-encoded Ed25519
@@ -76,18 +73,15 @@ are validated but not yet read.
 
 ```ini
 TEE_MODE=sgx
-TEE_SEALED_KEY_PATH=./data/sealed_key.bin
 REDIS_URL=redis://localhost:6379
-MODEL_STORAGE_BACKEND=ipfs
 MODEL_STORAGE_URL=http://localhost:5001
 WEB3_WS_URL=ws://localhost:8545
 WEB3_RPC_URL=http://localhost:8545
 ZKML_PROVING_KEY_STORE=./data/proving_keys
-ZKML_SUPPORTED_ARCHITECTURES=linear,cnn,mlp,transformer_small
 ```
 
-`ZKML_SUPPORTED_ARCHITECTURES` must be a subset of
-`common/constants.py:SUPPORTED_ARCHITECTURES`. For `PROOF_SUBMITTER_PRIVATE_KEY`
+Supported zkML architectures are fixed in `common/constants.py:SUPPORTED_ARCHITECTURES`.
+For `PROOF_SUBMITTER_PRIVATE_KEY`
 against the local chain you can use hardhat's well-known development account #0,
 `0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80` — that key is
 public and must **never** be used on a real network.
@@ -140,28 +134,20 @@ rejects. The listener logs a warning and polls the HTTP twin of that URL instead
 equivalent here because it polls with filters rather than subscribing. Real
 subscriptions would need an `AsyncWeb3` client.
 | `PROOF_SUBMITTER_PRIVATE_KEY` | A funded key on the target network |
-| `TEE_SEALED_KEY_PATH` | The real sealed key from hardware/TEE provisioning |
 | `TEE_TRUSTED_KEYS_PATH` | Public keys of the signers whose attestations you accept |
-| `ZEROG_*` | 0G Storage endpoints and credentials, if that backend is chosen |
 
 `TEE_TRUSTED_KEYS_PATH` is hand-authored: a JSON object mapping `signer_id` to
 the hex-encoded raw Ed25519 public key, for example
 `{"<signer_id>": "<64 hex characters>"}`. For a simulated enclave, `signer_id`
 is the first 32 hex characters of that same public key.
 
-**4. Validated but not yet read by the code**
+**4. Simulator behaviour**
 
-These must be *set* (`Settings` requires them) but nothing consumes them yet, so
-do not chase real credentials:
-
-- `TEE_SEALED_KEY_PATH` — nothing opens this file; `InferenceEngine` uses a
-  built-in default key (`inference/engine.py`).
-- `MODEL_STORAGE_BACKEND` — `inference/app.py` always constructs `IPFSBackend`
-  regardless of value, and the `zerog` backend raises `NotImplementedError`.
-- `ZKML_PROVING_KEY_STORE`, `ZKML_SUPPORTED_ARCHITECTURES` — not read outside
-  config; `data/proving_keys/` is currently empty.
-- `ZEROG_RPC_ENDPOINT`, `ZEROG_PRIVATE_KEY` — only meaningful once the 0G backend
-  is implemented.
+- `ZKML_PROVING_KEY_STORE` — the prover creates this directory, but the
+  development backend does not load keys from it yet.
+- The simulated enclave has no provisioned key. `InferenceEngine` generates a
+  fresh key per instance unless one is passed in (`inference/engine.py`).
+- There is no 0G storage backend. Only IPFS is implemented.
 
 ### Team A addresses are read, not copied
 

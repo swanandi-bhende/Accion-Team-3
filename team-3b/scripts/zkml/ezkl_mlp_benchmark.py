@@ -25,6 +25,7 @@ def save_model(
     initializers: Sequence[onnx.TensorProto],
     name: str,
 ) -> None:
+    """Write a single-graph ONNX model to path after checking it with onnx."""
     graph = helper.make_graph(nodes, name, inputs, outputs, initializers)
     model = helper.make_model(
         graph,
@@ -37,6 +38,16 @@ def save_model(
 
 
 def build_model(path: Path, architecture: str) -> None:
+    """Write the tiny ONNX model for an architecture to path.
+
+    Args:
+        path: Destination for the ONNX file.
+        architecture: One of ``linear``, ``mlp``, ``cnn`` or
+            ``transformer_small``.
+
+    Raises:
+        ValueError: If architecture is not supported.
+    """
     if architecture == "linear":
         input_info = helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 2])
         output_info = helper.make_tensor_value_info("output", TensorProto.FLOAT, [1, 1])
@@ -119,12 +130,35 @@ def build_model(path: Path, architecture: str) -> None:
 
 
 def timed(label: str, function: Callable[..., Any], *args: Any) -> tuple[Any, float]:
+    """Call function with args and measure its wall-clock duration.
+
+    Args:
+        label: Not used by the function body.
+        function: Callable to run.
+        *args: Positional arguments passed to function.
+
+    Returns:
+        A ``(result, seconds)`` tuple.
+    """
     started = time.perf_counter()
     result = function(*args)
     return result, time.perf_counter() - started
 
 
 def benchmark(architecture: str) -> dict:
+    """Run the EZKL setup, prove and verify pipeline for one architecture.
+
+    Builds the tiny model and writes its artifacts under
+    ``data/zkml_spike/<architecture>/``. Input data is random for ``cnn`` and
+    ``transformer_small`` and fixed otherwise.
+
+    Args:
+        architecture: Architecture name accepted by ``build_model``.
+
+    Returns:
+        A dict with the EZKL version, per-stage ``timings_seconds``,
+        ``artifact_sizes_bytes``, and whether the proof ``verified``.
+    """
     output_dir = OUTPUT_DIR / architecture
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path = output_dir / f"tiny_{architecture}.onnx"
@@ -189,6 +223,15 @@ def benchmark(architecture: str) -> dict:
 
 
 def main() -> int:
+    """Benchmark the selected architectures and save the results.
+
+    Architectures come from the repeatable ``--architecture`` option and
+    default to all four. Results are written to ``benchmark_result.json``
+    under ``data/zkml_spike/`` and printed as JSON.
+
+    Returns:
+        0 if every benchmark verified, 1 otherwise.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--architecture",

@@ -13,6 +13,11 @@ from proof_generator.verifier import ProofVerifier
 
 
 def serialize_attestation(report: AttestationReport, signer_public_key: bytes) -> bytes:
+    """Serialize an attestation report and its signer key for the TEE verifier.
+
+    The hardware signature is base64-encoded. The output is compact, key-sorted
+    JSON that ``ConcreteTEEVerifier.verify`` can parse.
+    """
     report_payload = {
         "enclave_measurement": report.enclave_measurement,
         "signer_identity": report.signer_identity,
@@ -39,11 +44,25 @@ def serialize_proof_artifact(artifact: ProofArtifact) -> bytes:
 
 
 class ConcreteTEEVerifier:
+    """Check TEE attestation proofs against trusted enclave signer keys.
+
+    An attestation passes only if it is recent (no older than ``expiry_s``), signed
+    by the key trusted for its signer identity, and bound to the input and output
+    hashes in the public inputs.
+    """
+
     def __init__(self, trusted_public_keys: dict[str, bytes], expiry_s: float = TEE_ATTESTATION_EXPIRY_S):
         self.trusted_public_keys = trusted_public_keys
         self.expiry_s = expiry_s
 
     async def verify(self, proof_bytes: bytes, public_inputs: dict[str, Any]) -> tuple[bool, str]:
+        """Verify a serialized attestation against the public inputs.
+
+        Returns:
+            A ``(passed, reason_code)`` tuple. The reason is ``verified`` on success,
+            otherwise ``malformed_proof``, ``expired_attestation``, ``invalid_signature``,
+            or ``proof_mismatch``.
+        """
         try:
             payload = json.loads(proof_bytes)
             report_payload = dict(payload["report"])
@@ -72,10 +91,24 @@ class ConcreteTEEVerifier:
 
 
 class ConcreteZkMLVerifier:
+    """Verify serialized zkML proof artifacts with the development proof verifier.
+
+    The underlying backend is a development commitment, not a zero-knowledge proof.
+    """
+
     def __init__(self) -> None:
         self._verifier = ProofVerifier()
 
     async def verify(self, proof_bytes: bytes, public_inputs: dict[str, Any]) -> tuple[bool, str]:
+        """Verify a serialized proof artifact against the supplied public inputs.
+
+        The artifact's own public inputs are replaced with the caller's before checking,
+        so the proof must match them.
+
+        Returns:
+            A ``(passed, reason_code)`` tuple: ``verified``, ``malformed_proof``, or
+            ``proof_mismatch``.
+        """
         try:
             artifact_payload = json.loads(proof_bytes)
             if "proof_bytes" in artifact_payload and isinstance(artifact_payload["proof_bytes"], str):

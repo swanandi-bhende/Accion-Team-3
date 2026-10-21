@@ -18,6 +18,11 @@ from federated_learning.simulated_client import make_simulated_clients
 
 
 async def main() -> None:
+    """Run a federated-learning training job from environment settings and store the model.
+
+    Trains the simulated clients through the orchestrator, uploads the final model
+    through the Model Registry, and prints its CID and round count.
+    """
     settings = get_settings().require("redis_url", "model_storage_url")
     redis_client = redis.from_url(settings.redis_url, decode_responses=False)
     storage = IPFSBackend(node_url=settings.model_storage_url or "http://localhost:5001")

@@ -54,7 +54,13 @@ TOKEN_ABI = json.loads(
 
 
 def rpc(web3: Web3, method: str, params: list[Any]) -> Any:
-    result = web3.provider.make_request(cast(RPCEndpoint, method), params)
+    """Send a raw JSON-RPC call through the web3 provider and return its result.
+
+    Returns:
+        The ``result`` field of the response, or None if it is absent.
+        Raises RuntimeError if the response carries an ``error`` field.
+    """
+    result =web3.provider.make_request(cast(RPCEndpoint, method), params)
     if "error" in result:
         raise RuntimeError(f"{method}: {result['error']}")
     return result.get("result")
@@ -70,7 +76,13 @@ def word(value: Any) -> str:
 
 
 def contract(web3: Web3, name: str, address: str) -> Any:
-    abi = json.loads((ABIS / f"{name}.abi.json").read_text(encoding="utf-8"))
+    """Bind the Team A ABI for ``name`` to ``address`` on the connected node.
+
+    Args:
+        name: Contract name; read from ``team_a_assets/<name>.abi.json``.
+        address: Deployed address; checksummed before use.
+    """
+    abi =json.loads((ABIS / f"{name}.abi.json").read_text(encoding="utf-8"))
     return web3.eth.contract(address=web3.to_checksum_address(address), abi=abi)
 
 
@@ -105,7 +117,17 @@ def seed_balance(web3: Web3, token_address: str, account: str, amount: int) -> i
 
 
 def install(web3: Web3, funder: str | None = None) -> dict[str, str]:
-    record = json.loads(BYTECODE_RECORD.read_text(encoding="utf-8"))
+    """Install Team A's contracts on the node behind ``web3`` and wire them together.
+
+    Args:
+        web3: Connection to a local node whose chain id matches the bytecode record.
+        funder: Account to seed with TEST tokens. Defaults to the third node
+            account, or the first if the node has fewer than three.
+
+    Returns:
+        Map of contract name to checksummed address, as recorded in the bytecode file.
+    """
+    record =json.loads(BYTECODE_RECORD.read_text(encoding="utf-8"))
     if int(web3.eth.chain_id) != record["chain_id"]:
         raise SystemExit(
             f"node reports chain id {web3.eth.chain_id}, the bytecode record is for "
@@ -147,7 +169,8 @@ def install(web3: Web3, funder: str | None = None) -> dict[str, str]:
     print(f"TEST token balances mapping: base slot {balance_slot}; funded {funder}")
 
     def send(tx: Any, label: str) -> None:
-        receipt = web3.eth.wait_for_transaction_receipt(tx)
+        """Wait for transaction ``tx`` to be mined and exit if it reverted."""
+        receipt =web3.eth.wait_for_transaction_receipt(tx)
         if receipt["status"] != 1:
             raise SystemExit(f"{label}: transaction reverted")
 
@@ -178,7 +201,8 @@ def install(web3: Web3, funder: str | None = None) -> dict[str, str]:
 
 
 def main() -> None:
-    rpc_url = os.environ.get("WEB3_RPC_URL") or DEFAULT_RPC
+    """Install Team A's contracts on the node at ``WEB3_RPC_URL``."""
+    rpc_url =os.environ.get("WEB3_RPC_URL") or DEFAULT_RPC
     web3 = Web3(Web3.HTTPProvider(rpc_url))
     if not web3.is_connected():
         raise SystemExit(f"no chain at {rpc_url}; start the node first (docker compose up -d hardhat-node)")

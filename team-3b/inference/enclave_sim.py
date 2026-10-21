@@ -1,5 +1,6 @@
 import asyncio
 import ctypes
+import sys
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -25,20 +26,36 @@ class EnclaveSim(Enclave):
 
     @property
     def measurement(self) -> str:
+        """Fixed placeholder measurement; the simulator has no hardware-backed measurement."""
         return self._measurement
 
     @property
     def signer_id(self) -> str:
+        """First 32 hex characters of the simulator's Ed25519 public key."""
         return self._signer_id
 
     @property
     def public_key_bytes(self) -> bytes:
+        """Raw 32-byte Ed25519 public key that verifies signatures from sign()."""
         return self._private_key.public_key().public_bytes(
             encoding=serialization.Encoding.Raw,
             format=serialization.PublicFormat.Raw,
         )
 
     def decrypt(self, encrypted_data: bytes, sealed_key: bytes) -> bytes:
+        """Decrypt AES-GCM data laid out as a 12-byte nonce followed by the ciphertext.
+
+        Args:
+            encrypted_data: The 12-byte nonce, then the AES-GCM ciphertext and tag.
+            sealed_key: AES-GCM key used to decrypt the data.
+
+        Returns:
+            The decrypted plaintext.
+
+        Raises:
+            ValueError: If encrypted_data is shorter than the 12-byte nonce.
+            cryptography.exceptions.InvalidTag: If authentication fails.
+        """
         # Assuming AES-GCM where nonce is first 12 bytes
         if len(encrypted_data) < 12:
             raise ValueError("Invalid encrypted data")
@@ -49,13 +66,27 @@ class EnclaveSim(Enclave):
         return plaintext
 
     async def run_isolated(self, model: bytes, input_data: bytes) -> bytes:
+        """Echo input_data through a separate Python process. The model is not executed.
+
+        The simulator only demonstrates a process boundary; the model argument is unused.
+
+        Args:
+            model: Decrypted model bytes. Ignored by the simulator.
+            input_data: Bytes piped to the subprocess on stdin.
+
+        Returns:
+            The subprocess output, ``b"simulated_output_for: " + input_data``.
+
+        Raises:
+            RuntimeError: If the subprocess exits with a non-zero status.
+        """
         # Simulate isolated OS subprocess by actually using asyncio subprocess
         # In a real enclave this would be hardware isolated execution.
         # For the mock, we just run a python subprocess that echoes back a dummy result
         # to ensure it actually crosses a process boundary.
 
         proc = await asyncio.create_subprocess_exec(
-            'python3', '-c',
+            sys.executable, '-c',
             'import sys; sys.stdout.buffer.write(b"simulated_output_for: " + sys.stdin.buffer.read())',
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -82,4 +113,5 @@ class EnclaveSim(Enclave):
             pass  # Ignore safety rails in python for the mock
 
     def sign(self, data: bytes) -> bytes:
+        """Sign data with the simulator's Ed25519 private key; returns the 64-byte signature."""
         return self._private_key.sign(data)

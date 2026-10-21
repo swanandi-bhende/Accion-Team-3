@@ -14,7 +14,8 @@ from proof_submitter.submitter import ProofSubmitter
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser()
+    """Print the DLQ entry at ``--index``; ``--replay`` resubmits and removes it."""
+    parser =argparse.ArgumentParser()
     parser.add_argument("--index", type=int, default=0, help="DLQ index to inspect")
     parser.add_argument("--replay", action="store_true", help="Replay the selected entry")
     args = parser.parse_args()

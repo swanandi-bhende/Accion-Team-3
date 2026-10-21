@@ -16,6 +16,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PendingProof:
+    """A proof waiting in a batch, with the hashes it submits on chain.
+
+    ``proof_hash`` is the SHA-256 of the zkML proof bytes and the hardware
+    signature. ``result_hash`` is the proof's output hash.
+    """
+
     task_id: str
     attestation: AttestationReport
     zkml_proof: ProofArtifact
@@ -25,6 +31,7 @@ class PendingProof:
     submitted_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
+        """Return the JSON-safe summary of this proof stored in dead-letter entries."""
         return {
             "task_id": self.task_id,
             "proof_hash": self.proof_hash,
@@ -35,6 +42,14 @@ class PendingProof:
 
 
 class ProofSubmitter:
+    """Batch proofs and submit them to the proof-submitter contract.
+
+    Proofs collected within ``batch_window`` seconds are sent together, one
+    transaction per contract-sized chunk. Each chunk is retried up to ``MAX_RETRIES``
+    times, skipping proofs the contract already holds. Chunks that still fail, and
+    proofs the contract rejects, are written to the dead-letter queue in Redis.
+    """
+
     BATCH_WINDOW = 10.0
     MAX_RETRIES = 3
     RETRY_INTERVAL = 10.0
@@ -84,6 +99,12 @@ class ProofSubmitter:
         zkml_proof: ProofArtifact,
         model_cid: str,
     ) -> PendingProof:
+        """Queue one proof for the next batch and start the batch timer if needed.
+
+        Returns:
+            The queued ``PendingProof``. Its transaction is sent when the batch window
+            ends or when ``flush`` is called.
+        """
         proof_hash = hashlib.sha256(zkml_proof.proof_bytes + attestation.hardware_signature).hexdigest()
         result_hash = zkml_proof.public_inputs.get("output_hash", attestation.output_hash)
         pending = PendingProof(task_id, attestation, zkml_proof, model_cid, proof_hash, result_hash, self.clock())
@@ -123,20 +144,53 @@ class ProofSubmitter:
         return await self._submit_batch(proofs)
 
     async def _submit_batch(self, proofs: list[PendingProof]) -> str | None:
+        """Submit ``proofs`` one contract-sized chunk at a time.
+
+        Each chunk is retried on its own, so a chunk the contract already accepted is
+        never resent because a later chunk failed. Returns the last transaction hash,
+        or ``None`` when every chunk was dead-lettered.
+        """
+        if not proofs:
+            return None
+        limit = await asyncio.to_thread(self._max_batch_size) or len(proofs)
+        last_tx_hash: str | None = None
+        for start in range(0, len(proofs), limit):
+            tx_hash = await self._submit_chunk(proofs[start:start + limit])
+            if tx_hash is not None:
+                last_tx_hash = tx_hash
+        return last_tx_hash
+
+    async def _submit_chunk(self, chunk: list[PendingProof]) -> str | None:
+        """Send the proofs in ``chunk`` that the contract does not hold yet.
+
+        The contract is asked before every attempt. A retry after a transaction that
+        was mined but whose receipt wait failed therefore sends nothing new, and is not
+        dead-lettered as a rejection of a proof that is already on chain.
+        """
         last_error: Exception | None = None
+        remaining = chunk
         for attempt in range(1, self.MAX_RETRIES + 1):
+            remaining = await asyncio.to_thread(self._unrecorded, chunk)
+            if not remaining:
+                logger.info("PROOF_ALREADY_RECORDED size=%s", len(chunk))
+                return None
             try:
-                tx_hash = await self._send_transaction(proofs)
+                tx_hash = await self._send_transaction(remaining)
                 rejected = self._rejections_by_tx.pop(tx_hash, [])
-                await self._emit_anchoring_event(tx_hash, proofs)
+                await self._emit_anchoring_event(tx_hash, remaining)
                 self.metrics["batches_submitted"] += 1
-                self.metrics["proofs_submitted"] += len(proofs) - len(rejected)
-                self.metrics["last_batch_size"] = len(proofs)
-                logger.info("Proof batch submitted size=%s tx_hash=%s", len(proofs), tx_hash)
+                self.metrics["proofs_submitted"] += len(remaining) - len(rejected)
+                self.metrics["last_batch_size"] = len(remaining)
+                logger.info("Proof batch submitted size=%s tx_hash=%s", len(remaining), tx_hash)
                 if rejected:
                     # Team A's submitProofs returns a count and rejects individual
-                    # entries with ProofRejected instead of reverting the batch, so
-                    # retrying the whole batch would resubmit the accepted ones.
+                    # entries with ProofRejected instead of reverting the batch.
+                    logger.warning(
+                        "PROOF_BATCH_PARTIAL accepted=%s rejected=%s task_ids=%s",
+                        len(remaining) - len(rejected),
+                        len(rejected),
+                        [proof.task_id for proof in rejected],
+                    )
                     self.metrics["rejected_by_contract"] += len(rejected)
                     await self._persist_to_dlq(rejected, RuntimeError("rejected on chain via ProofRejected"))
                 return tx_hash
@@ -144,11 +198,24 @@ class ProofSubmitter:
                 last_error = error
                 if attempt < self.MAX_RETRIES:
                     self.metrics["retries"] += 1
-                    logger.warning("Proof batch retry attempt=%s size=%s error=%s", attempt, len(proofs), error)
+                    logger.warning(
+                        "Proof batch retry attempt=%s size=%s error=%s", attempt, len(remaining), error
+                    )
                     await self.sleep(self.RETRY_INTERVAL)
-        await self._persist_to_dlq(proofs, last_error)
-        await self._emit_alert(proofs, last_error)
+        await self._persist_to_dlq(remaining, last_error)
+        await self._emit_alert(remaining, last_error)
         return None
+
+    def _unrecorded(self, proofs: list[PendingProof]) -> list[PendingProof]:
+        """The proofs the contract does not already hold with the same proof hash."""
+        getter = getattr(getattr(self.contract, "functions", None), "getProof", None)
+        if getter is None:
+            return list(proofs)
+        return [
+            proof
+            for proof in proofs
+            if getter(self._bytes32(proof.task_id)).call()[0] != self._bytes32(proof.proof_hash)
+        ]
 
     def _sender(self) -> str:
         if self.signer_address:
@@ -169,44 +236,19 @@ class ProofSubmitter:
             self._batch_limit = limit if limit > 0 else None
         return self._batch_limit
 
-    async def _submit_all(self, proofs: list[PendingProof]) -> tuple[str, list[PendingProof]]:
-        """Send ``proofs`` in contract-sized chunks; return the last hash and any rejects.
-
-        Splitting on ``MAX_PROOF_BATCH`` keeps a large buffer inside the contract's
-        batch limit instead of reverting the whole batch with ``BatchTooLarge``.
-        """
-        if not proofs:
-            return "", []
-        limit = self._max_batch_size() or len(proofs)
-        last_hash = ""
-        rejected: list[PendingProof] = []
-        for start in range(0, len(proofs), limit):
-            chunk = proofs[start:start + limit]
-            tx_hash, receipt = self._send_chunk(chunk)
-            last_hash = tx_hash
-            chunk_rejected = self._rejected_from_receipt(receipt, chunk)
-            if chunk_rejected:
-                logger.warning(
-                    "PROOF_BATCH_PARTIAL accepted=%s rejected=%s task_ids=%s",
-                    len(chunk) - len(chunk_rejected),
-                    len(chunk_rejected),
-                    [proof.task_id for proof in chunk_rejected],
-                )
-                rejected.extend(chunk_rejected)
-        return last_hash, rejected
-
     async def _send_transaction(self, proofs: list[PendingProof]) -> str:
-        """Submit every proof; returns the last transaction hash.
+        """Send one contract-sized chunk and return its transaction hash.
 
-        Contract-level rejections are recorded under the transaction hash, where
-        ``_submit_batch`` collects them; this entry point only reports the hash.
+        The web3 calls block, so they run in a worker thread. Contract-level
+        rejections are recorded under the transaction hash, where ``_submit_chunk``
+        collects them.
         """
-        tx_hash, rejected = await self._submit_all(proofs)
+        tx_hash, rejected = await asyncio.to_thread(self._send_chunk, proofs)
         if rejected:
             self._rejections_by_tx[tx_hash] = rejected
         return tx_hash
 
-    def _send_chunk(self, proofs: list[PendingProof]) -> tuple[str, Any]:
+    def _send_chunk(self, proofs: list[PendingProof]) -> tuple[str, list[PendingProof]]:
         task_ids = [self._bytes32(proof.task_id) for proof in proofs]
         proof_hashes = [self._bytes32(proof.proof_hash) for proof in proofs]
         model_cids = [proof.model_cid for proof in proofs]
@@ -232,7 +274,7 @@ class ProofSubmitter:
             len(proofs),
         )
         normalised = str(tx_hash.hex()) if hasattr(tx_hash, "hex") else str(tx_hash)
-        return normalised, receipt
+        return normalised, self._rejected_from_receipt(receipt, proofs)
 
     def _rejected_from_receipt(self, receipt: Any, proofs: list[PendingProof]) -> list[PendingProof]:
         """Proofs the contract reported as rejected in this receipt.

@@ -87,3 +87,14 @@ async def test_upload_backoff_and_success(redis_client: fakeredis.FakeRedis) -> 
     cid = await registry.upload_model("test_model", b"mock_data")
     assert cid == "QmSuccess"
     assert storage.attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_upload_gives_up_after_max_attempts(redis_client: fakeredis.FakeRedis) -> None:
+    storage = FailingStorageBackend(fail_count=ModelRegistry.MAX_UPLOAD_ATTEMPTS + 10)
+    registry = ModelRegistry(redis_client, storage)
+    registry.UPLOAD_BACKOFF_BASE = 0.001
+
+    with pytest.raises(StorageUnavailableError):
+        await registry.upload_model("test_model", b"mock_data")
+    assert storage.attempts == ModelRegistry.MAX_UPLOAD_ATTEMPTS

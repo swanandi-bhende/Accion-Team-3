@@ -42,7 +42,10 @@ services:
       - "5001:5001"
       - "${IPFS_GATEWAY_PORT:-8080}:8080"
     volumes:
-      - ipfs_data:/export
+      # Kubo's repo lives at /data/ipfs; mounting anywhere else loses every
+      # pinned block when the container is recreated while Redis keeps the CIDs
+      # that point at them.
+      - ipfs_data:/data/ipfs
     healthcheck:
       test: ["CMD", "ipfs", "id"]
       interval: 10s
