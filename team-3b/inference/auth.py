@@ -97,6 +97,9 @@ class Challenges:
 
         if self.lookup is None:
             raise AuthError("auth_unavailable", "no chain is configured to check the task's worker", 503)
-        worker = await self.lookup(task_id)
+        try:
+            worker = await self.lookup(task_id)
+        except Exception as error:
+            raise AuthError("auth_unavailable", f"could not read the task's worker: {type(error).__name__}", 503) from error
         if worker is None or worker.lower() != wallet:
             raise AuthError("not_task_worker", "wallet is not the worker recorded for this task", 403)

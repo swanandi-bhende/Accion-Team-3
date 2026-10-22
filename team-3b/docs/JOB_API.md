@@ -59,8 +59,21 @@ Responses:
 
 ### `GET /jobs/{job_id}`
 
+Reading needs a signed challenge from the job's task worker, the same as posting. Get one from
+`POST /challenges` with the job's `task_id` and the worker's wallet, sign its `message`, and send
+the result in headers:
+
+- `X-Wallet-Address`: the wallet
+- `X-Challenge-Nonce`, `X-Challenge-Expires-At`, `X-Challenge-Signature`: from the challenge
+
+Each read takes a fresh challenge, since a challenge is single-use. The worker's agent can sign
+these programmatically, so a polling loop needs one challenge and one signature per poll.
+
 - `200`: the job. Once it is `completed`, `receipt` is set.
-- `404 JobNotFound`.
+- `401 challenge_required`: a header is missing or malformed. The other authorization errors
+  are as for `POST /jobs`.
+- `403 not_task_worker`: the wallet is not the task's worker.
+- `404 JobNotFound`: no such job. This is checked before the challenge.
 
 Job fields: `job_id`, `status`, `task_id`, `input_hash`, `model_id`, `created_at`,
 `updated_at`, `deadline`, `error`, `receipt`.
@@ -137,9 +150,6 @@ are, since each run produces a new execution.
 
 These are agreed in principle with Team 3C but not built:
 
-- **Reading receipts.** `GET /jobs/{job_id}` is still open. The job id is an unguessable
-  UUID, but anyone holding it can read the receipt. Gating reads on the worker's wallet is an
-  open decision for Team 3C and the company.
 - **Trigger.** Company spec Requirement 5 starts workloads on `TaskCreated` and `TaskFunded`,
   which is what the listener does. Team 3C proposes `BidAccepted` instead. The two conflict,
   so this is for the company and Team 3C to decide. Jobs here come only from `POST /jobs`.

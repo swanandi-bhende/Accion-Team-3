@@ -67,6 +67,10 @@ def funded_event(task_id: bytes, block: int) -> dict[str, Any]:
     return {"blockNumber": block, "args": {"taskId": task_id, "funder": "0xabc", "amount": 1}}
 
 
+def accepted_event(task_id: bytes, block: int, worker: str) -> dict[str, Any]:
+    return {"blockNumber": block, "args": {"taskId": task_id, "worker": worker}}
+
+
 def chain_listener(
     redis: fakeredis.FakeRedis,
     genesis: str,
@@ -74,13 +78,18 @@ def chain_listener(
     created: list[dict[str, Any]] | None = None,
     funded: list[dict[str, Any]] | None = None,
     dispatch: Any = None,
+    accepted: list[dict[str, Any]] | None = None,
+    trigger: str = "task_created_funded",
 ) -> EventListener:
     return EventListener(
         web3=FakeChain(genesis, head),
-        task_manager=SimpleNamespace(events=SimpleNamespace(TaskCreated=FakeEvents(created))),
+        task_manager=SimpleNamespace(
+            events=SimpleNamespace(TaskCreated=FakeEvents(created), BidAccepted=FakeEvents(accepted))
+        ),
         escrow=SimpleNamespace(events=SimpleNamespace(TaskFunded=FakeEvents(funded))),
         redis_client=redis,
         dispatch=dispatch,
+        trigger=trigger,
     )
 
 
@@ -314,3 +323,73 @@ async def test_events_are_read_with_get_logs_over_the_requested_range() -> None:
 
     assert listener.task_manager.events.TaskCreated.calls == [(3, "latest")]
     assert listener.escrow.events.TaskFunded.calls == [(3, "latest")]
+
+
+TASK = b"\x30" * 32
+WORKER = "0x" + "11" * 20
+
+
+@pytest.mark.asyncio
+async def test_the_default_trigger_dispatches_without_a_bid() -> None:
+    redis = fakeredis.FakeRedis(decode_responses=False)
+    dispatched: list[dict[str, Any]] = []
+    listener = chain_listener(
+        redis,
+        GENESIS_A,
+        head=100,
+        created=[created_event(TASK, 5)],
+        funded=[funded_event(TASK, 6)],
+        dispatch=dispatched.append,
+    )
+
+    await listener._process_events(1)
+
+    assert [task["created"]["task_id"] for task in dispatched] == [TASK.hex()]
+
+
+@pytest.mark.asyncio
+async def test_the_bid_accepted_trigger_waits_for_the_winning_bid() -> None:
+    redis = fakeredis.FakeRedis(decode_responses=False)
+    dispatched: list[dict[str, Any]] = []
+    listener = chain_listener(
+        redis,
+        GENESIS_A,
+        head=100,
+        created=[created_event(TASK, 5)],
+        funded=[funded_event(TASK, 6)],
+        dispatch=dispatched.append,
+        trigger="bid_accepted",
+    )
+
+    await listener._process_events(1)
+    assert dispatched == []
+
+    listener.task_manager.events.BidAccepted.entries.append(accepted_event(TASK, 7, WORKER))
+    await listener._process_events(7)
+
+    assert len(dispatched) == 1
+    state = json.loads(await redis.get(f"{listener.TASK_STATE_PREFIX}{TASK.hex()}"))
+    assert state["dispatched"] is True
+    assert state["accepted"]["worker"] == WORKER
+
+
+@pytest.mark.asyncio
+async def test_a_bid_accepted_task_is_dispatched_once_even_after_a_restart() -> None:
+    redis = fakeredis.FakeRedis(decode_responses=False)
+    events = {"created": [created_event(TASK, 5)], "funded": [funded_event(TASK, 6)], "accepted": [accepted_event(TASK, 7, WORKER)]}
+    first_dispatches: list[dict[str, Any]] = []
+    first = chain_listener(redis, GENESIS_A, head=100, created=events["created"], funded=events["funded"], accepted=events["accepted"], dispatch=first_dispatches.append, trigger="bid_accepted")
+    await first._process_events(1)
+
+    restart_dispatches: list[dict[str, Any]] = []
+    restarted = chain_listener(redis, GENESIS_A, head=100, created=events["created"], funded=events["funded"], accepted=events["accepted"], dispatch=restart_dispatches.append, trigger="bid_accepted")
+    await restarted._process_events(1)
+
+    assert len(first_dispatches) == 1
+    assert restart_dispatches == []
+
+
+def test_an_unknown_execution_trigger_is_rejected() -> None:
+    redis = fakeredis.FakeRedis(decode_responses=False)
+    with pytest.raises(ValueError, match="unknown execution trigger"):
+        chain_listener(redis, GENESIS_A, head=1, trigger="on_tuesdays")

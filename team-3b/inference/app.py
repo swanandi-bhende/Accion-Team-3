@@ -21,7 +21,13 @@ from common.model_registry import ModelRegistry
 from common.models import ExecutionReceipt, InferenceRequest
 from common.storage.ipfs_backend import IPFSBackend
 from event_listener.config import load_contract_abi
-from inference.auth import AuthError, ChallengeRequest, Challenges, TaskWorkerLookup
+from inference.auth import (
+    AuthError,
+    Authorization,
+    ChallengeRequest,
+    Challenges,
+    TaskWorkerLookup,
+)
 from inference.engine import InferenceEngine
 from inference.jobs import (
     FINISHED_STATUSES,
@@ -263,17 +269,36 @@ async def create_job(body: JobCreate, request: Request, service: JobService = De
     )
 
 @app.get("/jobs/{job_id}")
-async def get_job(job_id: str, service: JobService = Depends(get_job_service)) -> JSONResponse:
+async def get_job(request: Request, job_id: str, service: JobService = Depends(get_job_service)) -> JSONResponse:
     """Report a job's status. Once it is completed, the response carries the receipt.
 
+    Reading needs a signed challenge from the job's task worker, sent in the X-Challenge-*
+    headers, so a job ID alone does not reveal the receipt. Each read takes a fresh challenge.
     The receipt holds the execution receipt, the TEE attestation and the zkML proof, in the
     wire formats the verification API accepts.
     """
     job = await service.get(job_id)
     if job is None:
         return JSONResponse(status_code=404, content={"error": "JobNotFound", "detail": job_id})
-    headers = None if job["status"] in FINISHED_STATUSES else {"Retry-After": str(POLL_AFTER_S)}
-    return JSONResponse(status_code=200, content=job, headers=headers)
+    headers = request.headers
+    try:
+        authorization = Authorization(
+            wallet_address=headers["x-wallet-address"],
+            nonce=headers["x-challenge-nonce"],
+            expires_at=int(headers["x-challenge-expires-at"]),
+            signature=headers["x-challenge-signature"],
+        )
+    except (KeyError, ValueError):
+        return JSONResponse(
+            status_code=401,
+            content={"error": "challenge_required", "detail": "send X-Wallet-Address, X-Challenge-Nonce, X-Challenge-Expires-At and X-Challenge-Signature"},
+        )
+    try:
+        await get_challenges(request).verify(job["task_id"], authorization)
+    except AuthError as error:
+        return JSONResponse(status_code=error.status_code, content={"error": error.code, "detail": error.detail})
+    retry_headers = None if job["status"] in FINISHED_STATUSES else {"Retry-After": str(POLL_AFTER_S)}
+    return JSONResponse(status_code=200, content=job, headers=retry_headers)
 
 @app.get("/health")
 async def health_check(request: Request) -> JSONResponse:

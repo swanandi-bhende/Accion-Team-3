@@ -69,10 +69,22 @@ async def signed_body(
     return body
 
 
+async def read_headers(task_id: str = TASK_ID, account: Account = WALLET, signer: Account | None = None) -> dict[str, str]:
+    """Headers that let one GET /jobs/{id} read a job of ``task_id``. Each read needs a new challenge."""
+    challenge = await app.state.challenges.issue(task_id, account.address)
+    signature = (signer or account).sign_message(encode_defunct(text=challenge["message"])).signature
+    return {
+        "X-Wallet-Address": account.address,
+        "X-Challenge-Nonce": challenge["nonce"],
+        "X-Challenge-Expires-At": str(challenge["expires_at"]),
+        "X-Challenge-Signature": "0x" + bytes(signature).hex(),
+    }
+
+
 async def wait_for_status(client: AsyncClient, job_id: str, statuses: set[str], timeout: float = 20.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while True:
-        response = await client.get(f"/jobs/{job_id}")
+        response = await client.get(f"/jobs/{job_id}", headers=await read_headers())
         job = response.json()
         if job.get("status") in statuses:
             return job
@@ -312,7 +324,7 @@ async def test_a_job_that_outlives_its_budget_fails_as_job_timeout(
     input_data = tensor_bytes(seed=21)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         accepted = (await client.post("/jobs", json=await signed_body(input_data))).json()
-        running = await client.get(f"/jobs/{accepted['job_id']}")
+        running = await client.get(f"/jobs/{accepted['job_id']}", headers=await read_headers())
         job = await wait_for_status(client, accepted["job_id"], {"failed", "completed"})
 
     assert running.headers["retry-after"] == "5"
@@ -330,7 +342,7 @@ async def test_the_post_reports_the_deadline_the_client_can_poll_until(
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         accepted = (await client.post("/jobs", json=await signed_body(input_data))).json()
         job = await wait_for_status(client, accepted["job_id"], {"completed", "failed"})
-        finished = await client.get(f"/jobs/{accepted['job_id']}")
+        finished = await client.get(f"/jobs/{accepted['job_id']}", headers=await read_headers())
 
     assert accepted["deadline"] >= before + 150
     assert job["deadline"] == accepted["deadline"]
@@ -555,6 +567,74 @@ async def test_no_job_is_accepted_without_a_chain_to_check_the_worker(
 ) -> None:
     payload = await signed_body(tensor_bytes(seed=53))
     app.state.challenges.lookup = None
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/jobs", json=payload)
+
+    assert response.status_code == 503
+    assert response.json()["error"] == "auth_unavailable"
+
+
+async def posted_job(client: AsyncClient, seed: int) -> str:
+    accepted = (await client.post("/jobs", json=await signed_body(tensor_bytes(seed=seed)))).json()
+    return str(accepted["job_id"])
+
+
+@pytest.mark.asyncio
+async def test_reading_a_job_without_a_signed_challenge_is_refused(jobs: tuple[JobService, Any, fakeredis.FakeRedis]) -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        job_id = await posted_job(client, seed=55)
+        response = await client.get(f"/jobs/{job_id}")
+
+    assert response.status_code == 401
+    assert response.json()["error"] == "challenge_required"
+
+
+@pytest.mark.asyncio
+async def test_reading_with_a_signature_from_another_key_is_refused(
+    jobs: tuple[JobService, Any, fakeredis.FakeRedis],
+) -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        job_id = await posted_job(client, seed=57)
+        response = await client.get(f"/jobs/{job_id}", headers=await read_headers(signer=OTHER))
+
+    assert response.status_code == 401
+    assert response.json()["error"] == "bad_signature"
+
+
+@pytest.mark.asyncio
+async def test_reading_by_a_wallet_that_is_not_the_task_worker_is_forbidden(
+    jobs: tuple[JobService, Any, fakeredis.FakeRedis],
+) -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        job_id = await posted_job(client, seed=59)
+        response = await client.get(f"/jobs/{job_id}", headers=await read_headers(account=OTHER))
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "not_task_worker"
+
+
+@pytest.mark.asyncio
+async def test_a_read_challenge_is_good_for_one_read(jobs: tuple[JobService, Any, fakeredis.FakeRedis]) -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        job_id = await posted_job(client, seed=61)
+        headers = await read_headers()
+        first = await client.get(f"/jobs/{job_id}", headers=headers)
+        replay = await client.get(f"/jobs/{job_id}", headers=headers)
+
+    assert first.status_code == 200
+    assert replay.status_code == 401
+    assert replay.json()["error"] == "challenge_unknown"
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_chain_refuses_the_job_with_503_not_a_crash(
+    jobs: tuple[JobService, Any, fakeredis.FakeRedis],
+) -> None:
+    async def unreachable(_task_id: str) -> str | None:
+        raise ConnectionError("rpc down")
+
+    payload = await signed_body(tensor_bytes(seed=63))
+    app.state.challenges.lookup = unreachable
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post("/jobs", json=payload)
 

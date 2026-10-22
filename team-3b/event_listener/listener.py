@@ -12,9 +12,18 @@ from common.models import InferenceRequest
 
 logger = logging.getLogger(__name__)
 
+# What starts a task. The company spec (Requirement 5) uses TaskCreated and TaskFunded;
+# BidAccepted is Team 3C's proposal, and it also needs the winning worker to be accepted.
+TASK_CREATED_FUNDED = "task_created_funded"
+BID_ACCEPTED = "bid_accepted"
+TRIGGERS = (TASK_CREATED_FUNDED, BID_ACCEPTED)
+
 
 class EventListener:
-    """Follow TaskCreated and TaskFunded events and dispatch each task once both are seen.
+    """Follow Team A's task events and dispatch each task once its trigger events are seen.
+
+    The trigger decides which events a task needs: TaskCreated and TaskFunded (the default),
+    or those plus BidAccepted.
 
     Progress is persisted in Redis per block and per task, so polling resumes from the
     last processed block after a restart. A task moves through three states:
@@ -50,7 +59,10 @@ class EventListener:
         dispatch: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+        trigger: str = TASK_CREATED_FUNDED,
     ):
+        if trigger not in TRIGGERS:
+            raise ValueError(f"unknown execution trigger {trigger!r}; expected one of {TRIGGERS}")
         self.web3 = web3
         self.task_manager = task_manager
         self.escrow = escrow
@@ -59,6 +71,7 @@ class EventListener:
         self.dispatch = dispatch or (self._dispatch_to_engine if inference_engine is not None else None)
         self.clock = clock
         self.sleep = sleep
+        self.trigger = trigger
         self._task_events: dict[str, dict[str, Any]] = {}
         self._pending_since: dict[str, float] = {}
         self._connection_state = "disconnected"
@@ -179,6 +192,18 @@ class EventListener:
         await self._persist_task_state(task_id)
         await self._try_dispatch(task_id)
 
+    async def _process_accepted(self, event: Any) -> None:
+        args = self._event_args(event)
+        task_id = self._task_id(args["taskId"])
+        self._task_events.setdefault(task_id, {})["accepted"] = {
+            "task_id": task_id,
+            "worker": args["worker"],
+            "block_number": self._block_number(event),
+        }
+        self._pending_since.setdefault(task_id, self.clock())
+        await self._persist_task_state(task_id)
+        await self._try_dispatch(task_id)
+
     async def _process_events(self, from_block: int, to_block: int | str = "latest") -> None:
         await self._restore_task_states()
         # One eth_getLogs per event type. A filter would stay installed on the node after
@@ -187,11 +212,12 @@ class EventListener:
         funded_events = self.escrow.events.TaskFunded.get_logs(from_block=from_block, to_block=to_block)
         events = [(self._block_number(event), 0, event) for event in created_events]
         events.extend((self._block_number(event), 1, event) for event in funded_events)
+        if self.trigger == BID_ACCEPTED:
+            accepted_events = self.task_manager.events.BidAccepted.get_logs(from_block=from_block, to_block=to_block)
+            events.extend((self._block_number(event), 2, event) for event in accepted_events)
+        handlers = (self._process_created, self._process_funded, self._process_accepted)
         for block_number, event_type, event in sorted(events, key=lambda item: (item[0], item[1])):
-            if event_type == 0:
-                await self._process_created(event)
-            else:
-                await self._process_funded(event)
+            await handlers[event_type](event)
             await self._persist_block_number(block_number)
         # Retry tasks whose earlier dispatch failed. Without a dispatch target there is nothing to retry.
         if self.dispatch is not None:
@@ -236,9 +262,13 @@ class EventListener:
         self._task_events.clear()
         self._pending_since.clear()
 
+    def _ready(self, task: dict[str, Any]) -> bool:
+        required = ["created", "funded"] + (["accepted"] if self.trigger == BID_ACCEPTED else [])
+        return all(key in task for key in required)
+
     async def _try_dispatch(self, task_id: str) -> bool:
         task = self._task_events.get(task_id)
-        if not task or task.get("dispatched") or task.get("attempted") or "created" not in task or "funded" not in task:
+        if not task or task.get("dispatched") or task.get("attempted") or not self._ready(task):
             return False
         if self._expired(task["created"]["deadline"]):
             logger.warning("Skipping expired task_id=%s deadline=%s", task_id, task["created"]["deadline"])

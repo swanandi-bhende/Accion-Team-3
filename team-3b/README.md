@@ -20,6 +20,13 @@ The system workflow follows a strict pipeline:
 - **Team A (Smart Contracts):** INTEGRATED. The listener and submitter run against Team A's real contracts — ABIs in `team_a_assets/`, addresses in `deployments/galileo.json`, and their deployed bytecode replayed onto the local `chain/` node by `scripts/ops/install_team_a_local.py`. Chain id 16602, the same as 0G Galileo.
 - **Team C (Agent Logic):** MOCKED. Expected agent payloads are stubbed locally pending finalized schemas from Team C.
 
+### Open decision: what starts execution
+- **Company spec, Requirement 5:** the listener starts workloads on `TaskCreated` and `TaskFunded`. This is what the code does today.
+- **Team C's proposal:** start execution on `BidAccepted`, so only the winning worker runs a task, and nothing runs before a winner exists.
+- The two are different triggers for the same work. Running both risks executing a task twice, or before anyone has won it. The company and Team C need to choose one.
+- Until they do, the spec's trigger stays the default.
+- **Both are built, and the setting picks one.** `EXECUTION_TRIGGER=task_created_funded` (the default, the spec) or `EXECUTION_TRIGGER=bid_accepted` (Team C's proposal). Set it in `.env` and restart the pipeline. Each task still runs at most once, under either setting.
+
 ### Do not use the mock contracts
 
 Our own stub contracts are archived in `mocks/legacy_mock_contracts/`. **They are

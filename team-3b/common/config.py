@@ -108,6 +108,9 @@ class Settings(BaseSettings):
 
     # --- Pipeline ---
     pipeline_max_in_flight: int = 4
+    # What starts a task: the company spec (Requirement 5) uses TaskCreated and TaskFunded;
+    # bid_accepted (Team 3C's proposal) also waits for BidAccepted. Undecided with the company.
+    execution_trigger: Literal["task_created_funded", "bid_accepted"] = "task_created_funded"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
