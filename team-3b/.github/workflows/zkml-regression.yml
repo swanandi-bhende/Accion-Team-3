@@ -1,0 +1,29 @@
+name: zkML Regression Benchmark
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  ezkl-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install zkML dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/base.txt -r requirements/dev.txt
+      - name: Run real EZKL benchmark
+        run: python scripts/zkml/ezkl_mlp_benchmark.py
+      - name: Check timing and proof-size regression
+        run: python scripts/zkml/check_zkml_timing_regression.py
+      - name: Upload benchmark result
+        uses: actions/upload-artifact@v4
+        with:
+          name: zkml-benchmark-result
+          path: data/zkml_spike/benchmark_result.json

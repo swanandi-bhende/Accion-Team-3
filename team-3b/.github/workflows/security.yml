@@ -1,0 +1,32 @@
+name: Security Scanning
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  push:
+    branches: [ "main" ]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit pip-audit
+
+      - name: Run Bandit (SAST)
+        run: bandit -r . -ll
+
+      - name: Run pip-audit
+        run: |
+          pip install -r requirements/base.txt
+          pip-audit

@@ -1,0 +1,87 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "verifiable-ai-execution"
+version = "0.1.0"
+description = "Verifiable AI Execution subsystem (Team 3b) with TEE and zkML"
+authors = [
+    {name = "Team 3b"}
+]
+dependencies = [
+    "fastapi>=0.138.0",
+    "uvicorn>=0.49.0",
+    "web3>=6.11.0",
+    "redis>=5.0.0",
+    "flwr>=1.39.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.0.0",
+    "cryptography>=46.0.0",
+    "numpy>=1.26",
+    "onnx>=1.23.0",
+    "onnxruntime>=1.30.0",
+]
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+# The runtime proof path is the pure-Python development-commitment backend in
+# proof_generator/zkml_prover.py. EZKL/ONNX are only needed by the spike and
+# benchmark tooling (scripts/zkml/ezkl_mlp_benchmark.py), and ezkl==23.0.5 publishes
+# no wheel for linux/arm64 or Python 3.14 -- which is why they are not runtime
+# dependencies and why they were split out of requirements/base.txt.
+zkml = [
+    "ezkl>=23.0.5",
+    "onnx>=1.23.0",
+    "onnxruntime>=1.30.0",
+]
+dev = [
+    "pytest>=7.4.3",
+    "pytest-cov>=4.1.0",
+    "hypothesis>=6.98.0",
+    "bandit>=1.7.5",
+    "black>=23.12.0",
+    "mypy>=1.8.0"
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py310']
+include = '\.pyi?$'
+
+[tool.mypy]
+# 3.12 rather than the 3.11 floor: numpy's bundled stubs use 3.12 syntax and
+# mypy cannot parse them under an older target.
+python_version = "3.12"
+files = ["common", "inference", "event_listener", "proof_submitter", "proof_generator", "verification", "federated_learning", "scripts", "tests"]
+explicit_package_bases = true
+follow_imports = "silent"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Transitive dependency whose inline mypy directives this mypy version rejects.
+module = ["sqlalchemy.*"]
+follow_imports = "skip"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+exclude = ["mocks", "data", "logs", "venv", ".ruff_cache"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+# E501 is the formatter's concern (black owns 88); B008 flags the
+# function-call-in-default-argument style used deliberately for injectable
+# dependencies (clock=time.time, sleep=asyncio.sleep).
+ignore = ["E501", "B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+python_files = "test_*.py"
+markers = [
+    "fl_network: real Flower gRPC server plus client *processes* (slower; run in the fl-integration job)",
+]
