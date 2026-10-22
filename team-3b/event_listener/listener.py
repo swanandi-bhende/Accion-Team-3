@@ -17,11 +17,24 @@ class EventListener:
     """Follow TaskCreated and TaskFunded events and dispatch each task once both are seen.
 
     Progress is persisted in Redis per block and per task, so polling resumes from the
-    last processed block after a restart. A task is marked dispatched and persisted
-    before the dispatch callable runs, so it is not dispatched twice.
+    last processed block after a restart. A task moves through three states:
+
+    - undispatched, with no flag;
+    - attempted, persisted before the dispatch callable runs. A crash in between leaves
+      it here, so a restart never dispatches it twice;
+    - dispatched, persisted only after the dispatch target accepted it.
+
+    An error from the dispatch target returns the task to undispatched, so it is retried
+    on the next pass. Without a dispatch target the listener only tracks tasks and never
+    marks one dispatched.
+
+    The progress belongs to one chain, identified by its genesis block hash. A reset node
+    has a different genesis, so before polling the listener clears the cursor and task
+    records saved for the old chain. Block numbers and task ids mean nothing across chains.
     """
 
     LAST_BLOCK_KEY = "event_listener:last_block"
+    CHAIN_KEY = "event_listener:chain"
     TASK_STATE_PREFIX = "event_listener:task:"
     RECONNECT_BASE = 1.0
     RECONNECT_MAX = 60.0
@@ -43,7 +56,7 @@ class EventListener:
         self.escrow = escrow
         self.redis = redis_client
         self.inference_engine = inference_engine
-        self.dispatch = dispatch or self._dispatch_to_engine
+        self.dispatch = dispatch or (self._dispatch_to_engine if inference_engine is not None else None)
         self.clock = clock
         self.sleep = sleep
         self._task_events: dict[str, dict[str, Any]] = {}
@@ -168,10 +181,10 @@ class EventListener:
 
     async def _process_events(self, from_block: int, to_block: int | str = "latest") -> None:
         await self._restore_task_states()
-        created_filter = self._create_filter(self.task_manager.events.TaskCreated, from_block, to_block)
-        funded_filter = self._create_filter(self.escrow.events.TaskFunded, from_block, to_block)
-        created_events = created_filter.get_all_entries()
-        funded_events = funded_filter.get_all_entries()
+        # One eth_getLogs per event type. A filter would stay installed on the node after
+        # every poll, which is what leaked thousands of filters on the local chain.
+        created_events = self.task_manager.events.TaskCreated.get_logs(from_block=from_block, to_block=to_block)
+        funded_events = self.escrow.events.TaskFunded.get_logs(from_block=from_block, to_block=to_block)
         events = [(self._block_number(event), 0, event) for event in created_events]
         events.extend((self._block_number(event), 1, event) for event in funded_events)
         for block_number, event_type, event in sorted(events, key=lambda item: (item[0], item[1])):
@@ -180,36 +193,80 @@ class EventListener:
             else:
                 await self._process_funded(event)
             await self._persist_block_number(block_number)
+        # Retry tasks whose earlier dispatch failed. Without a dispatch target there is nothing to retry.
+        if self.dispatch is not None:
+            for task_id in list(self._task_events):
+                await self._try_dispatch(task_id)
 
-    @staticmethod
-    def _create_filter(event_type: Any, from_block: int, to_block: int | str) -> Any:
-        try:
-            return event_type.create_filter(fromBlock=from_block, toBlock=to_block)
-        except TypeError as error:
-            if "fromBlock" not in str(error):
-                raise
-            return event_type.create_filter(from_block=from_block, to_block=to_block)
+    async def _genesis_hash(self) -> str:
+        raw = self.web3.eth.get_block(0)["hash"]
+        text = raw.hex() if isinstance(raw, bytes) else str(raw)
+        return "0x" + text.removeprefix("0x")
+
+    async def _align_with_chain(self) -> None:
+        """Clear the progress saved for a different chain.
+
+        A reset node reuses block numbers and task ids, so state from the old chain would
+        hide new events below the saved cursor and could mark a new task as dispatched.
+        """
+        genesis = await self._genesis_hash()
+        stored = await self.redis.get(self.CHAIN_KEY)
+        stored_text = stored.decode() if isinstance(stored, bytes) else stored
+        if stored_text == genesis:
+            return
+        if stored_text is None:
+            # Progress saved before chain identity was recorded. Keep it unless the cursor
+            # is past this chain's head, which only another chain can produce.
+            if await self._get_last_processed_block() <= self.web3.eth.block_number:
+                await self.redis.set(self.CHAIN_KEY, genesis)
+                return
+        logger.warning(
+            "CHAIN_CHANGED genesis=%s previous=%s; clearing progress saved for the previous chain",
+            genesis,
+            stored_text,
+        )
+        await self._clear_progress()
+        await self.redis.set(self.CHAIN_KEY, genesis)
+
+    async def _clear_progress(self) -> None:
+        keys = await self.redis.keys(f"{self.TASK_STATE_PREFIX}*")
+        if keys:
+            await self.redis.delete(*keys)
+        await self.redis.delete(self.LAST_BLOCK_KEY)
+        self._task_events.clear()
+        self._pending_since.clear()
 
     async def _try_dispatch(self, task_id: str) -> bool:
         task = self._task_events.get(task_id)
-        if not task or task.get("dispatched") or "created" not in task or "funded" not in task:
+        if not task or task.get("dispatched") or task.get("attempted") or "created" not in task or "funded" not in task:
             return False
         if self._expired(task["created"]["deadline"]):
             logger.warning("Skipping expired task_id=%s deadline=%s", task_id, task["created"]["deadline"])
             self._task_events.pop(task_id, None)
             self._pending_since.pop(task_id, None)
             return False
+        if self.dispatch is None:
+            logger.info("TASK_READY task_id=%s no dispatch target configured; not dispatched", task_id)
+            return False
+        task["attempted"] = True
+        await self._persist_task_state(task_id)
+        try:
+            result = self.dispatch(task)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            # The target did not accept the task, so it goes back to undispatched and the
+            # next pass retries it.
+            task.pop("attempted", None)
+            await self._persist_task_state(task_id)
+            logger.exception("Dispatch failed task_id=%s; will retry", task_id)
+            return False
         task["dispatched"] = True
         await self._persist_task_state(task_id)
-        result = self.dispatch(task)
-        if inspect.isawaitable(result):
-            await result
         logger.info("Dispatched task_id=%s block_number=%s", task_id, task["created"]["block_number"])
         return True
 
     async def _dispatch_to_engine(self, task: dict[str, Any]) -> Any:
-        if self.inference_engine is None:
-            return None
         request = InferenceRequest(
             model_id=task["created"]["description_hash"].hex(),
             input_data=b"",
@@ -262,6 +319,8 @@ class EventListener:
         self._connection_state = "connected"
         while not self._stop_requested:
             try:
+                # Checked on every pass, so a chain reset while the listener runs is caught too.
+                await self._align_with_chain()
                 from_block = await self._get_last_processed_block() + 1
                 await self._process_events(from_block)
             except (ConnectionError, OSError):

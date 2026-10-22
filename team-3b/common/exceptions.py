@@ -35,6 +35,42 @@ class StorageUnavailableError(Exception):
     pass
 
 
+class ProvingBackendUnavailableError(Exception):
+    """The EZKL toolchain is not installed, so its proofs cannot be made or checked."""
+
+
+class ProvingKeysUnavailableError(Exception):
+    """No proving bundle exists for the model, so its proof cannot be made or checked."""
+
+
+class ProofInconsistentError(Exception):
+    """The zkML circuit's output disagrees with the TEE's output for the same input."""
+
+
+class ProofGenerationError(Exception):
+    """The EZKL toolchain failed to make or build a proof for an input it accepted."""
+
+
+class ProofNotSubmittableError(Exception):
+    """A proof's backend is not allowed on chain, so the proof is not submitted.
+
+    Development-commitment proofs are not zero-knowledge. They reach the chain only when
+    a test opts in explicitly.
+    """
+
+    def __init__(self, backend: str):
+        self.backend = backend
+        super().__init__(f"proof from backend '{backend}' is not allowed on chain")
+
+
+class ModelExecutionError(Exception):
+    """The model could not run on the input.
+
+    Raised for bytes that are not a runnable ONNX model, an input whose shape or dtype
+    does not match the model, and runtime failures inside the inference worker.
+    """
+
+
 class ConfigurationError(Exception):
     """Raised when required environment configuration is missing or invalid.
 

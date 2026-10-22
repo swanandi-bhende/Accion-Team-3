@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 
 import fakeredis.aioredis as fakeredis
+import numpy as np
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
@@ -10,9 +11,13 @@ from redis.asyncio import Redis
 from common.exceptions import ModelNotFoundError
 from common.model_registry import ModelRegistry
 from common.models import InferenceRequest
+from common.tensors import decode_tensor, encode_tensor
 from inference.engine import InferenceEngine
 from inference.tee_runtime import TEERuntime
+from tests.onnx_fixtures import expected_linear_output, linear_model_bytes
 from tests.property.test_model_registry_prop import MockStorageBackend
+
+FLOATS = st.floats(min_value=-100, max_value=100, allow_nan=False, width=32)
 
 
 @pytest.fixture
@@ -37,71 +42,61 @@ def tee() -> TEERuntime:
 def engine(registry: ModelRegistry, tee: TEERuntime, redis_client: Redis) -> InferenceEngine:
     return InferenceEngine(registry, tee, redis_client, timeout_s=5.0)
 
+
 @settings(max_examples=10, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
-@given(model_binary=st.binary(min_size=16, max_size=100), input_data=st.binary(min_size=1, max_size=100))
+@given(seed=st.integers(min_value=0, max_value=10_000), values=st.lists(FLOATS, min_size=4, max_size=4))
 @pytest.mark.asyncio
 async def test_property_1_execution_receipt(
     engine: InferenceEngine,
     registry: ModelRegistry,
     storage: MockStorageBackend,
-    model_binary: bytes,
-    input_data: bytes,
+    seed: int,
+    values: list[float],
 ) -> None:
-    """Property 1: Valid inputs produce valid receipt with correct hashes."""
-    # We must mock encryption for the TEE sim to decrypt properly.
-    import os
+    """Property 1: a valid request yields a receipt with correct ids, hashes and output."""
+    model_binary = linear_model_bytes(seed)
+    cid = await storage.upload(model_binary)
+    model_id = f"test_model_prop1_{seed}"
+    await registry.register(model_id, cid, model_binary)
+    input_data = encode_tensor(np.array([values], dtype=np.float32))
 
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    sealed_key = engine.sealed_key
-    aesgcm = AESGCM(sealed_key)
-    nonce = os.urandom(12)
-    encrypted_data = nonce + aesgcm.encrypt(nonce, model_binary, None)
+    receipt = await engine.execute(InferenceRequest(model_id=model_id, input_data=input_data))
 
-    # Upload encrypted model
-    cid = await storage.upload(encrypted_data)
-    model_id = "test_model_prop1"
-    await registry.register(model_id, cid, encrypted_data)
-
-    req = InferenceRequest(model_id=model_id, input_data=input_data)
-    receipt = await engine.execute(req)
-
-    expected_input_hash = hashlib.sha256(input_data).hexdigest()
-    expected_output_hash = hashlib.sha256(receipt.output).hexdigest()
-
-    assert receipt.input_hash == expected_input_hash
-    assert receipt.output_hash == expected_output_hash
     assert receipt.model_id == model_id
+    assert receipt.model_cid == cid
+    assert receipt.input_hash == hashlib.sha256(input_data).hexdigest()
+    assert receipt.output_hash == hashlib.sha256(receipt.output).hexdigest()
+    assert np.allclose(
+        decode_tensor(receipt.output),
+        expected_linear_output(np.array([values], dtype=np.float32), seed),
+        rtol=1e-4,
+        atol=1e-3,
+    )
 
-@settings(max_examples=25, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+
+@settings(max_examples=8, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(
-    input1=st.binary(min_size=1, max_size=100),
-    input2=st.binary(min_size=1, max_size=100)
+    values1=st.lists(FLOATS, min_size=4, max_size=4),
+    values2=st.lists(FLOATS, min_size=4, max_size=4),
 )
 @pytest.mark.asyncio
 async def test_property_2_isolation_guarantees(
     engine: InferenceEngine,
     registry: ModelRegistry,
     storage: MockStorageBackend,
-    input1: bytes,
-    input2: bytes,
+    values1: list[float],
+    values2: list[float],
 ) -> None:
-    """Property 2: Concurrent requests do not cross-contaminate."""
-    # Register a generic mock model
-    model_binary = b"concurrent_model_test"
-    import os
-
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    sealed_key = engine.sealed_key
-    aesgcm = AESGCM(sealed_key)
-    nonce = os.urandom(12)
-    encrypted_data = nonce + aesgcm.encrypt(nonce, model_binary, None)
-
-    cid = await storage.upload(encrypted_data)
+    """Property 2: concurrent requests do not cross-contaminate their outputs."""
+    model_binary = linear_model_bytes(0)
+    cid = await storage.upload(model_binary)
     model_id = "test_model_prop2"
-    await registry.register(model_id, cid, encrypted_data)
+    await registry.register(model_id, cid, model_binary)
 
-    req1 = InferenceRequest(model_id=model_id, input_data=input1)
-    req2 = InferenceRequest(model_id=model_id, input_data=input2)
+    x1 = np.array([values1], dtype=np.float32)
+    x2 = np.array([values2], dtype=np.float32)
+    req1 = InferenceRequest(model_id=model_id, input_data=encode_tensor(x1))
+    req2 = InferenceRequest(model_id=model_id, input_data=encode_tensor(x2))
 
     first_started = asyncio.Event()
     second_started = asyncio.Event()
@@ -130,16 +125,12 @@ async def test_property_2_isolation_guarantees(
     await second_started.wait()
     release_first.set()
 
-    receipt1, receipt2 = await asyncio.gather(
-        task1,
-        task2,
-    )
+    receipt1, receipt2 = await asyncio.gather(task1, task2)
 
-    # Ensure output reflects the correct input strictly (our enclave sim echoes input)
-    assert input1 in receipt1.output
-    assert input2 in receipt2.output
-    if input1 != input2:
-        assert receipt1.output != receipt2.output
+    # Each output is the model applied to its own input and to no one else's.
+    assert np.allclose(decode_tensor(receipt1.output), expected_linear_output(x1, 0), rtol=1e-4, atol=1e-3)
+    assert np.allclose(decode_tensor(receipt2.output), expected_linear_output(x2, 0), rtol=1e-4, atol=1e-3)
+
 
 @settings(max_examples=10, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(model_id=st.text(min_size=1), input_data=st.binary(min_size=1))

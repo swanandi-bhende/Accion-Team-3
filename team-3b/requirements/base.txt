@@ -7,3 +7,6 @@ pydantic-settings>=2.0.0
 setuptools<70.0.0
 httpx
 cryptography>=46.0.0
+numpy>=1.26
+onnx==1.23.0
+onnxruntime==1.30.0

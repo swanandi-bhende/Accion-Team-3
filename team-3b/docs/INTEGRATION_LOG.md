@@ -17,11 +17,9 @@ the marker is then removed in the same change, together with the entry's status.
 ### DRIFT-003: `input_data` is not decoded from base64
 
 - **Documented:** `InferenceRequest.input_data` is `base64_encoded_bytes`.
-- **Observed:** `common/models.py` types it as `bytes`, and pydantic stores the JSON string's UTF-8 bytes unchanged. `POST /inference` therefore runs inference on the literal base64 text. `scripts/ops/smoke_test_compose.sh` sends the base64 text as-is, and `scripts/ops/load_test_inference.py` base64-encodes its payload, so both exercise the literal base64 text.
-- **Impact:** any real client following the documented encoding gets outputs computed over the wrong input. This is a Team C contract question first, and our bug second.
-- **Pinned by:** `tests/unit/test_inference_contract.py::test_input_data_is_decoded_from_base64`.
-- **Raised with:** not yet. Confirm the encoding with Team C (checklist item 1). Fixing it changes the receipts the smoke test checks.
-- **Status:** open.
+- **Observed:** the service stored the JSON string's UTF-8 bytes unchanged, so inference ran over the base64 text instead of the decoded bytes.
+- **Resolved (2026-10-21):** `InferenceRequest` decodes base64 text at the boundary, and raw bytes still pass through for Python callers. The strict xfail that pinned this is removed (`tests/unit/test_inference_contract.py`). The compose smoke test and the load test send base64 payloads.
+- **Status:** resolved.
 
 ### DRIFT-006: Team A's Prover allow-list is empty
 
@@ -75,6 +73,14 @@ the marker is then removed in the same change, together with the entry's status.
 - **Observed:** the listener dispatches with `model_id = descriptionHash.hex()` (`inference/pipeline.py`), so a task runs only if the registry holds a model under that hex string. The cross-team driver creates tasks with `descriptionHash = keccak(model_id)`, so its registry key would be `keccak(model_id).hex()`, not Team C's id. The rehearsal succeeded only because it used a model id that is already registered.
 - **Impact:** a real Team C request will not resolve in our registry until both sides agree the mapping.
 - **Status:** open. Proposed rule for discussion: the registry key is Team C's model id, and Team A's `descriptionHash` is `keccak(model_id)`. This is a proposal, not an agreement.
+
+### DRIFT-015: inference input and output format is ours, not agreed
+
+- **Documented:** `INTEGRATION_CONTRACTS.md` gave `input_data` as an unspecified base64 payload and the output as an unspecified field.
+- **Decision (2026-10-21, ours):** the input is base64 of a `.npy` float32 tensor, models are ONNX with one float32 input and one float32 output, and the receipt's `output` is base64 of the output's `.npy` bytes. The model runs in a per-request child process under ONNX Runtime 1.30.
+- **Impact:** Team C must send tensors in this form and read outputs the same way. Their model ids must map to ONNX models we register.
+- **Raised with:** not yet. Needed for checklist items 1, 3, and 7.
+- **Status:** open (proposal, not agreed).
 
 ## Resolved entries
 

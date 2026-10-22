@@ -13,6 +13,7 @@ import pytest
 from eth_typing import HexStr
 from web3 import Web3
 
+from common.constants import DEVELOPMENT_PROOF_BACKEND
 from common.models import AttestationReport, ProofArtifact
 from event_listener.listener import EventListener
 from proof_submitter import ProofSubmitter
@@ -27,7 +28,8 @@ async def test_event_listener_to_proof_submitter_pipeline(
     redis = fakeredis.FakeRedis(decode_responses=False)
     description_hash = web3.keccak(text="pipeline-model")
     task_id, created_receipt, funded_receipt = create_funded_task(description_hash)
-    submitter = ProofSubmitter(web3, task_manager, redis, batch_window=10.0)
+    # The proof below is a development stand-in, so this test opts in to it explicitly.
+    submitter = ProofSubmitter(web3, task_manager, redis, batch_window=10.0, allow_development_backend=True)
 
     async def dispatch(task: dict[str, Any]) -> None:
         attestation = AttestationReport(
@@ -42,6 +44,7 @@ async def test_event_listener_to_proof_submitter_pipeline(
             proof_bytes=b"mock-zkml-proof",
             public_inputs={"output_hash": "output-hash"},
             verification_key_ref="mock-vk",
+            backend=DEVELOPMENT_PROOF_BACKEND,
         )
         await submitter.submit_proof(task["created"]["task_id"], attestation, proof, "QmPipelineModel")
 

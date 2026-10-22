@@ -1,11 +1,17 @@
 import asyncio
+import hashlib
+from collections.abc import Awaitable
+from pathlib import Path
+from typing import cast
 
 import fakeredis.aioredis as fakeredis
 import pytest
 
-from common.exceptions import StorageUnavailableError
+from common.exceptions import IntegrityCheckFailedError, StorageUnavailableError
 from common.interfaces import StorageBackend
-from common.model_registry import ModelRegistry
+from common.model_registry import FAILED_UPLOAD_KEY, ModelRegistry
+from common.sealing import seal
+from tests.property.test_model_registry_prop import MockStorageBackend
 
 
 class FailingStorageBackend(StorageBackend):
@@ -90,11 +96,126 @@ async def test_upload_backoff_and_success(redis_client: fakeredis.FakeRedis) -> 
 
 
 @pytest.mark.asyncio
-async def test_upload_gives_up_after_max_attempts(redis_client: fakeredis.FakeRedis) -> None:
-    storage = FailingStorageBackend(fail_count=ModelRegistry.MAX_UPLOAD_ATTEMPTS + 10)
-    registry = ModelRegistry(redis_client, storage)
+async def test_upload_waits_out_an_outage_with_no_attempt_cap(
+    redis_client: fakeredis.FakeRedis, tmp_path: Path
+) -> None:
+    storage = FailingStorageBackend(fail_count=12)
+    registry = ModelRegistry(redis_client, storage, spool_dir=tmp_path)
     registry.UPLOAD_BACKOFF_BASE = 0.001
 
-    with pytest.raises(StorageUnavailableError):
-        await registry.upload_model("test_model", b"mock_data")
-    assert storage.attempts == ModelRegistry.MAX_UPLOAD_ATTEMPTS
+    cid = await registry.upload_model("test_model", b"mock_data")
+
+    assert cid == "QmSuccess"
+    assert storage.attempts == 13
+    assert await registry.pending_upload_count() == 0
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_backoff_follows_the_spec_sequence_and_stops_at_the_maximum(
+    monkeypatch: pytest.MonkeyPatch, redis_client: fakeredis.FakeRedis, tmp_path: Path
+) -> None:
+    """Requirement 7.5 with the default bounds: 5 s doubling to 300 s."""
+    delays: list[float] = []
+
+    async def record(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("common.model_registry.asyncio.sleep", record)
+    registry = ModelRegistry(redis_client, FailingStorageBackend(fail_count=8), spool_dir=tmp_path)
+
+    await registry.upload_model("test_model", b"mock_data")
+
+    assert delays == [5.0, 10.0, 20.0, 40.0, 80.0, 160.0, 300.0, 300.0]
+
+
+@pytest.mark.asyncio
+async def test_queued_upload_survives_a_restart(redis_client: fakeredis.FakeRedis, tmp_path: Path) -> None:
+    down = FailingStorageBackend(fail_count=10**9)
+    first = ModelRegistry(redis_client, down, spool_dir=tmp_path)
+    first.UPLOAD_BACKOFF_BASE = 0.001
+    task = asyncio.create_task(first.upload_model("queued_model", b"model-bytes", architecture="linear"))
+    for _ in range(500):
+        if await first.pending_upload_count() == 1:
+            break
+        await asyncio.sleep(0.005)
+    assert await first.pending_upload_count() == 1
+
+    task.cancel()  # the process dies while storage is still down
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    restarted = ModelRegistry(redis_client, MockStorageBackend(), spool_dir=tmp_path)
+    cids = await restarted.resume_uploads()
+
+    entry = await restarted.get("queued_model")
+    assert entry is not None
+    assert cids == [entry.cid]
+    assert entry.architecture == "linear"
+    assert entry.hash == hashlib.sha256(b"model-bytes").hexdigest()
+    assert await restarted.pending_upload_count() == 0
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_integrity_failure_moves_the_upload_to_the_failed_list(
+    redis_client: fakeredis.FakeRedis, tmp_path: Path
+) -> None:
+    class TamperedStorage(StorageBackend):
+        async def upload(self, data: bytes) -> str:
+            return "QmTampered"
+
+        async def retrieve(self, cid: str) -> bytes:
+            return b"not what was uploaded"
+
+    registry = ModelRegistry(redis_client, TamperedStorage(), spool_dir=tmp_path)
+
+    with pytest.raises(IntegrityCheckFailedError):
+        await registry.upload_model("tampered", b"real-model")
+    assert await registry.pending_upload_count() == 0
+    assert await cast(Awaitable[int], redis_client.llen(FAILED_UPLOAD_KEY)) == 1
+
+
+@pytest.mark.asyncio
+async def test_outage_during_validation_is_retried_not_treated_as_tampering(
+    redis_client: fakeredis.FakeRedis, tmp_path: Path
+) -> None:
+    class FlakyRead(StorageBackend):
+        def __init__(self) -> None:
+            self.reads = 0
+
+        async def upload(self, data: bytes) -> str:
+            return "QmFlaky"
+
+        async def retrieve(self, cid: str) -> bytes:
+            self.reads += 1
+            if self.reads < 3:
+                raise StorageUnavailableError("read timed out")
+            return b"good-model"
+
+    storage = FlakyRead()
+    registry = ModelRegistry(redis_client, storage, spool_dir=tmp_path)
+    registry.UPLOAD_BACKOFF_BASE = 0.001
+
+    cid = await registry.upload_model("flaky", b"good-model")
+
+    assert cid == "QmFlaky"
+    assert storage.reads == 3
+
+
+@pytest.mark.asyncio
+async def test_sealed_blob_is_registered_under_its_plaintext_hash(
+    redis_client: fakeredis.FakeRedis, tmp_path: Path
+) -> None:
+    plaintext = b"model-weights"
+    blob = seal(plaintext, bytes(range(32)))
+    storage = MockStorageBackend()
+    registry = ModelRegistry(redis_client, storage, spool_dir=tmp_path)
+
+    cid = await registry.upload_model("sealed", blob, model_hash=hashlib.sha256(plaintext).hexdigest())
+
+    entry = await registry.get("sealed")
+    assert entry is not None
+    assert entry.cid == cid
+    assert entry.hash == hashlib.sha256(plaintext).hexdigest()
+    assert await storage.retrieve(cid) == blob

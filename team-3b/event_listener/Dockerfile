@@ -1,11 +1,12 @@
 # syntax=docker/dockerfile:1
 
-# Event Listener: a long-lived poller, not a web server. It follows the mock
-# chain, pairs TaskCreated with TaskFunded, and dispatches complete tasks.
+# Event Listener on its own: a long-lived poller that follows the chain, pairs
+# TaskCreated with TaskFunded, and records what it has seen. Compose does not run
+# it. The `pipeline` service runs the same listener in-process and dispatches the
+# tasks to inference, proving and settlement. This image stays for running the
+# listener alone, for example as a monitor against another chain.
 #
-# It reads the compiled contract ABIs from mocks/contracts/artifacts/ at
-# startup; docker-compose.yml mounts that directory read-only because the
-# artifacts are git-ignored build output produced by the deploy step.
+# It reads Team A's contract ABIs from team_a_assets/, which the run mounts read-only.
 FROM base
 
 COPY common ./common

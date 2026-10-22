@@ -293,18 +293,27 @@ equivalent for a listener that uses filters rather than subscriptions; and both 
 ABIs from `mocks/contracts/artifacts/`, which the images did not contain, so they
 now mount that directory read-only. The result is a live stack: the deploy
 succeeds and writes `.env.mock` with all three addresses, `event-listener`
-follows the chain to its head and records `"dispatched": true` for the triggered
-task, `proof-submitter` idles against a real settlement address, the two APIs
+follows the chain to its head and records both events for the triggered task (a
+correction: the flag once read `"dispatched": true` before any dispatch happened, which
+is now fixed; see the listener's undispatched, attempted and dispatched states), `proof-submitter` idles against a real settlement address, the two APIs
 answer on 8000/8001, and `fl-orchestrator` completes its rounds and exits 0 (it
 is a one-shot job).
 
-Known limitations, stated plainly: `docker compose` has no service for the
-composed pipeline yet — the in-process wiring runs from
-`python -m inference.pipeline`, and giving it a container belongs to Step 17's
-multi-container work; the hand-off is still an `asyncio.Queue` rather than the
-Redis Streams transport the multi-container deployment needs; the enclave is
+Known limitations, stated plainly: the `event-listener` service described above has
+since been replaced by a `pipeline` service, which runs the listener together with
+inference, proving and settlement (`python -m inference.pipeline`). Compose settles a
+task only when a model is registered under its description hash; other tasks are
+recorded as `dropped_model_not_found`. The listener's Redis progress is keyed by the
+chain's genesis hash and is cleared when the chain changes. The hand-off
+inside the pipeline is still an `asyncio.Queue` rather than the Redis Streams
+transport the multi-container deployment needs; the enclave is
 `EnclaveSim`, so attestations are signed by a simulated measurement and nothing
-here is hardware-attested; and none of it has run against Team A's contracts,
-only the local mock chain.
+here is hardware-attested. The chain side runs against Team A's contracts, not a
+stub: `tests/integration/test_full_pipeline_e2e.py`, `test_onchain_pipeline_e2e.py`,
+`test_event_listener_team_a_chain.py` and `test_proof_submitter_team_a_chain.py` load
+Team A's ABIs from `team_a_assets/` and use the addresses in `deployments/galileo.json`
+on a local Hardhat node that replays Team A's deployed bytecode. Only the storage
+backend is a double, since no IPFS node runs in those tests. Nothing has yet run
+against the live 0G Galileo testnet.
 
 No commit or tag was created.

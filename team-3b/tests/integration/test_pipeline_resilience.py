@@ -21,6 +21,7 @@ import fakeredis.aioredis as fakeredis
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from common.constants import DEVELOPMENT_PROOF_BACKEND
 from common.interfaces import StorageBackend
 from common.model_registry import ModelRegistry
 from common.models import (
@@ -41,9 +42,10 @@ from inference.tee_runtime import TEERuntime
 from proof_generator.zkml_prover import ZkMLProver
 from proof_submitter.submitter import PendingProof, ProofSubmitter
 from tests import chain_helper
+from tests.onnx_fixtures import mlp_model_bytes
 
 SEALED_KEY = b"mock_sealed_key_0123456789abcdef"
-MODEL_BINARY = b"MOCK_MLP_WEIGHTS_67890"
+MODEL_BINARY = mlp_model_bytes()
 SLOW_MODEL = "dd" * 32
 FAST_MODEL = "ee" * 32
 
@@ -104,7 +106,7 @@ class FakeProver:
     def __init__(self, timeout_for: Iterable[str] = ()) -> None:
         self.timeout_for = set(timeout_for)
 
-    async def generate_proof(self, receipt: ExecutionReceipt) -> ProofArtifact:
+    async def generate_proof(self, receipt: ExecutionReceipt, input_data: bytes | None = None) -> ProofArtifact:
         if receipt.model_id in self.timeout_for:
             raise TimeoutError("proof generation exceeded its timeout")
         return ProofArtifact(
@@ -116,6 +118,7 @@ class FakeProver:
                 "architecture": "mlp",
             },
             verification_key_ref="data/proving_keys/mlp.vk",
+            backend=DEVELOPMENT_PROOF_BACKEND,
         )
 
 
@@ -382,7 +385,7 @@ async def test_exhausted_submission_retries_land_in_dlq_and_the_pipeline_continu
     """The first batch reverts until it is dead-lettered; the next task still settles."""
     web3, task_manager, escrow = team_a_chain
     redis_client: Any = fakeredis.FakeRedis(decode_responses=False)
-    submitter = ProofSubmitter(web3, task_manager, redis_client, batch_window=10.0)
+    submitter = ProofSubmitter(web3, task_manager, redis_client, batch_window=10.0, allow_development_backend=True)
     # Retries must be instant here; the batch window stays realistic so the
     # background flush timer cannot race the explicit flush.
     submitter.RETRY_INTERVAL = 0.0

@@ -32,10 +32,12 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import numpy as np
 import redis
 from eth_account import Account
 from web3 import Web3
 
+from common.tensors import encode_tensor
 from scripts.ops import team_a
 from scripts.ops.team_c_conformance import (
     Finding,
@@ -47,7 +49,7 @@ from scripts.ops.team_c_conformance import (
 PASSED, FAILED, SKIPPED = "passed", "failed", "skipped"
 DEFAULT_PAYLOAD: dict[str, Any] = {
     "model_id": "toy_linear",
-    "input_data": base64.b64encode(b"hello").decode(),
+    "input_data": base64.b64encode(encode_tensor(np.zeros((1, 4), dtype=np.float32))).decode(),
 }
 DISPATCH_TIMEOUT_S = 30.0
 

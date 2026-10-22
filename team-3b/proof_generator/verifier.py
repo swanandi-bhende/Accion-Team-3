@@ -5,10 +5,10 @@ import hmac
 import json
 from typing import Any
 
-from common.constants import SUPPORTED_ARCHITECTURES
+from common.constants import DEVELOPMENT_PROOF_BACKEND, SUPPORTED_ARCHITECTURES
 from common.models import ProofArtifact
 
-BACKEND_NAME = "development-commitment"
+BACKEND_NAME = DEVELOPMENT_PROOF_BACKEND
 
 
 def commitment_proof(public_inputs: dict[str, Any], architecture: str) -> bytes:

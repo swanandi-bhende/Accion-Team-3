@@ -19,6 +19,8 @@ from flwr.common import NDArrays, Scalar
 from common.interfaces import StorageBackend
 from common.model_registry import ModelRegistry
 from common.models import FLTaskConfig, InferenceRequest
+from common.onnx_models import linear_model
+from common.tensors import decode_tensor, encode_tensor
 from federated_learning.orchestrator import (
     FederatedLearningOrchestrator,
     NoClientsRespondedError,
@@ -182,14 +184,24 @@ async def test_trained_model_is_loadable_by_the_inference_pipeline() -> None:
     assert entry.cid == result.model_cid
     assert entry.hash == result.model_hash
 
+    # The orchestrator stores weights, so the trained parameters are exported to ONNX
+    # and registered as a runnable model before the engine can serve them.
+    weight, bias = result.final_parameters
+    export_cid = await registry.upload_model("fl-e2e-onnx", linear_model(weight, bias), architecture="linear")
+    x = np.ones((1, 4), dtype=np.float32)
+
     tee_runtime = TEERuntime("sgx")
     tee_runtime.initialize()
     try:
         engine = InferenceEngine(registry=registry, tee=tee_runtime, redis_client=redis_client)
-        receipt = await engine.execute(InferenceRequest(model_id="fl-e2e", input_data=b"hello fl"))
+        receipt = await engine.execute(
+            InferenceRequest(model_id="fl-e2e-onnx", input_data=encode_tensor(x))
+        )
 
-        assert receipt.model_id == "fl-e2e"
-        assert receipt.model_cid == result.model_cid
+        assert receipt.model_id == "fl-e2e-onnx"
+        assert receipt.model_cid == export_cid
         assert receipt.output_hash == hashlib.sha256(receipt.output).hexdigest()
+        expected = x @ weight.astype(np.float32) + bias.astype(np.float32)
+        assert np.allclose(decode_tensor(receipt.output), expected, atol=1e-5)
     finally:
         tee_runtime.shutdown()

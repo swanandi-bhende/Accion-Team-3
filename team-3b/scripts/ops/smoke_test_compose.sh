@@ -8,11 +8,11 @@
 #   1. every long-running service reports healthy, and one-shot jobs exited 0;
 #   2. Redis answers PING;
 #   3. the local chain answers JSON-RPC on Team A's chain id, Team A's contracts
-#      have code at their Galileo addresses, and the event-listener is configured
+#      have code at their Galileo addresses, and the pipeline is configured
 #      with those same addresses;
 #   4. the inference engine serves the seeded toy model;
 #   5. a fresh task created and funded on Team A's contracts is dispatched by the
-#      event-listener.
+#      pipeline, and the pipeline logs its outcome for that task.
 #
 # Environment overrides:
 #   SMOKE_WAIT_TIMEOUT   seconds to wait for services to become healthy (default 180)
@@ -35,7 +35,7 @@ WAIT_TIMEOUT=${SMOKE_WAIT_TIMEOUT:-180}
 TASK_TIMEOUT=${SMOKE_TASK_TIMEOUT:-60}
 SKIP_TRIGGER=${SMOKE_SKIP_TRIGGER:-0}
 
-HEALTHY_SERVICES="redis ipfs hardhat-node inference-engine verification-api event-listener proof-submitter"
+HEALTHY_SERVICES="redis ipfs hardhat-node inference-engine verification-api pipeline proof-submitter"
 ONE_SHOT_SERVICES="team-a-contracts seed-model fl-orchestrator"
 
 ok() {
@@ -131,9 +131,9 @@ check_chain() {
         address=$(json_field "[\"$name\"]" < "$DEPLOYMENTS_FILE")
         code=$(rpc eth_getCode "[\"$address\",\"latest\"]" | json_field '["result"]')
         [[ "$code" != "0x" && -n "$code" ]] || fail "hardhat-node" "no contract code at $name=$address"
-        listener_value=$(docker compose exec -T event-listener python -c "from common.config import get_settings; print(get_settings().$(printf %s "$name" | tr '[:upper:]' '[:lower:]'))" | tr -d '\r') || listener_value=""
-        [[ "$(printf %s "$listener_value" | tr "[:upper:]" "[:lower:]")" == "$(printf %s "$address" | tr "[:upper:]" "[:lower:]")" ]] || fail "event-listener" "$name=$listener_value does not match deployed $address"
-        ok "contracts" "$name=$address code=present listener=matches"
+        listener_value=$(docker compose exec -T pipeline python -c "from common.config import get_settings; print(get_settings().$(printf %s "$name" | tr '[:upper:]' '[:lower:]'))" | tr -d '\r') || listener_value=""
+        [[ "$(printf %s "$listener_value" | tr "[:upper:]" "[:lower:]")" == "$(printf %s "$address" | tr "[:upper:]" "[:lower:]")" ]] || fail "pipeline" "$name=$listener_value does not match deployed $address"
+        ok "contracts" "$name=$address code=present pipeline=matches"
     done
 }
 
@@ -142,7 +142,7 @@ check_inference() {
     local response
     response=$(curl -fsS --max-time 30 -X POST "$INFERENCE_URL/inference" \
         -H 'content-type: application/json' \
-        -d '{"model_id":"toy_linear","input_data":"aGVsbG8="}') \
+        -d '{"model_id":"toy_linear","input_data":"k05VTVBZAQB2AHsnZGVzY3InOiAnPGY0JywgJ2ZvcnRyYW5fb3JkZXInOiBGYWxzZSwgJ3NoYXBlJzogKDEsIDQpLCB9ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAoAAAAAAAAAAAAAAAAAAAAA"}') \
         || fail "inference-engine" "POST /inference for seeded model toy_linear failed"
     printf '%s' "$response" | grep -q '"output_hash"' || fail "inference-engine" "receipt has no output_hash"
     ok "inference-engine" "model=toy_linear inference=receipt"
@@ -153,6 +153,10 @@ check_inference() {
 #    it reaches the node over the compose network.
 check_dispatch() {
     local output task_id deadline value
+    # Only log lines from this run count: the pipeline log keeps earlier runs' outcomes,
+    # and a deterministic task id can come back after a chain reset.
+    local since
+    since=$(date -u +%Y-%m-%dT%H:%M:%S)
     output=$(mktemp)
     docker compose run --rm --no-deps -T team-a-contracts \
         python -m scripts.ops.trigger_team_a_task >"$output" 2>&1 \
@@ -161,15 +165,36 @@ check_dispatch() {
     rm -f "$output"
     [[ -n "$task_id" ]] || fail "trigger" "no task id in trigger output"
 
+    # The listener logs the task id in lower-case hex, without the 0x prefix.
+    local key_id log_id outcome detail dispatched=0
+    key_id=${task_id#0x}
+    log_id=$(printf %s "$key_id" | tr "[:upper:]" "[:lower:]")
+
     deadline=$(( $(date +%s) + TASK_TIMEOUT ))
     while true; do
-        value=$(docker compose exec -T redis redis-cli --raw GET "event_listener:task:${task_id#0x}" || true)
-        if grep -q '"dispatched": true' <<<"$value"; then
-            ok "event-listener" "task_id=$task_id dispatched=true"
-            return 0
+        # The flag is only written after the pipeline's dispatch target accepted the task,
+        # so dispatched=true here means the pipeline really took it.
+        if [[ $dispatched -eq 0 ]]; then
+            value=$(docker compose exec -T redis redis-cli --raw GET "event_listener:task:${key_id}" || true)
+            if grep -q '"dispatched": true' <<<"$value"; then
+                dispatched=1
+            fi
+        fi
+        if [[ $dispatched -eq 1 ]]; then
+            # Dispatch alone is not processing: wait for the pipeline to log the outcome.
+            outcome=$(docker compose logs --no-color --since "$since" pipeline 2>&1 | grep "PIPELINE_TASK_COMPLETE task_id=${log_id} " | tail -1 || true)
+            if [[ -n "$outcome" ]]; then
+                detail=${outcome#*PIPELINE_TASK_COMPLETE }
+                # Only a submitted task counts: a dropped one was dispatched but did not settle.
+                if grep -q "outcome=submitted" <<<"$detail"; then
+                    ok "pipeline" "task_id=$task_id dispatched=true $detail"
+                    return 0
+                fi
+                fail "pipeline" "task_id=$task_id dispatched but not settled: $detail"
+            fi
         fi
         if [[ $(date +%s) -ge $deadline ]]; then
-            fail "event-listener" "task_id=$task_id not dispatched after ${TASK_TIMEOUT}s"
+            fail "pipeline" "task_id=$task_id dispatched=$dispatched; no PIPELINE_TASK_COMPLETE after ${TASK_TIMEOUT}s"
         fi
         sleep 2
     done

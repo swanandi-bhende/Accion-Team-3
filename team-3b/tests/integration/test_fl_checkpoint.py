@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import fakeredis.aioredis as fakeredis
+import numpy as np
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -33,6 +34,8 @@ from common.exceptions import IntegrityCheckFailedError
 from common.interfaces import StorageBackend
 from common.model_registry import ModelRegistry
 from common.models import FLTaskConfig
+from common.onnx_models import linear_model
+from common.tensors import decode_tensor, encode_tensor
 from federated_learning.orchestrator import FederatedLearningOrchestrator
 from federated_learning.simulated_client import make_simulated_clients
 from inference.tee_runtime import TEERuntime
@@ -79,19 +82,24 @@ async def test_property_11_trained_model_runs_through_the_tee_runtime() -> None:
     model_binary = await registry.storage.retrieve(entry.cid)
     assert hashlib.sha256(model_binary).hexdigest() == entry.hash == result.model_hash
 
-    # ...and that binary is accepted by the TEE runtime and produces output.
+    # The orchestrator stores the trained weights, not an ONNX model, so the TEE runs an
+    # ONNX export of those same parameters. Exporting inside the pipeline is a later step.
+    weight, bias = result.final_parameters
+    onnx_bytes = linear_model(weight, bias)
+    x = np.array([[0.5, -1.0, 2.0, 0.25]], dtype=np.float32)
     tee = TEERuntime("sgx")
     tee.initialize()
     try:
         output = await tee.execute_inference(
-            model_binary=model_binary,
-            model_hash=entry.hash,
-            input_data=b"fl-toy-input",
+            model_binary=onnx_bytes,
+            model_hash=hashlib.sha256(onnx_bytes).hexdigest(),
+            input_data=encode_tensor(x),
             sealed_key=SEALED_KEY,
         )
     finally:
         tee.shutdown()
-    assert output == b"simulated_output_for: fl-toy-input"
+    expected = x @ weight.astype(np.float32) + bias.astype(np.float32)
+    assert np.allclose(decode_tensor(output), expected, atol=1e-5)
 
     # A blob whose plaintext does not hash to the expected model hash is refused.
     tee = TEERuntime("sgx")

@@ -16,6 +16,7 @@ missing or blank ones are reported together in a single itemized error.
 import json
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -46,6 +47,9 @@ class Settings(BaseSettings):
     tee_mode: str | None = None
     tee_trusted_keys_path: str | None = None
     tee_inference_timeout_s: float = 30.0
+    # 64 hex characters (a 256-bit AES key) that open sealed models. Blank means each
+    # engine generates its own key, which is only useful for models sealed in-process.
+    tee_sealed_key: str | None = None
 
     # --- Storage ---
     redis_url: str | None = None
@@ -76,11 +80,18 @@ class Settings(BaseSettings):
     check_prover_allowlist: bool = True
 
     # --- Proof submission ---
+    # Off: development-commitment proofs are not zero-knowledge and are never sent on chain.
+    # Only a test environment should set this, to exercise the chain path.
+    proof_allow_development_backend: bool = False
     proof_batch_window_s: float = 10.0
     proof_submitter_private_key: str = ""
     proof_submitter_contract_address: str | None = None
 
     # --- zkML ---
+    # "ezkl" is production: zero-knowledge proofs from the model's circuit. It needs the
+    # ezkl package (requirements/zkml.txt) and a proving bundle per model in the store.
+    # "development" is the commitment stand-in, which is never submitted on chain.
+    zkml_backend: Literal["development", "ezkl"] = "development"
     zkml_proving_key_store: str = "data/proving_keys"
 
     # --- Federated learning ---
@@ -99,6 +110,27 @@ class Settings(BaseSettings):
     pipeline_max_in_flight: int = 4
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    @field_validator("tee_sealed_key", mode="before")
+    @classmethod
+    def _blank_sealed_key_is_unset(cls, value: object) -> object:
+        """Validate the sealed key's shape at startup, so a bad key fails before serving."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        if isinstance(value, str):
+            try:
+                key = bytes.fromhex(value.removeprefix("0x"))
+            except ValueError as error:
+                raise ValueError("TEE_SEALED_KEY must be hex") from error
+            if len(key) != 32:
+                raise ValueError("TEE_SEALED_KEY must be 64 hex characters (a 256-bit key)")
+        return value
+
+    def sealed_key_bytes(self) -> bytes | None:
+        """The configured sealing key as bytes, or None when it is unset."""
+        if self.tee_sealed_key is None:
+            return None
+        return bytes.fromhex(self.tee_sealed_key.removeprefix("0x"))
 
     @field_validator("web3_chain_id", mode="before")
     @classmethod

@@ -36,7 +36,7 @@ def build_verification_interface(settings: Settings, storage: StorageBackend) ->
     """Assemble the public verification path from trusted keys and storage."""
     return VerificationInterface(
         ConcreteTEEVerifier(trusted_public_keys=load_trusted_keys(settings.tee_trusted_keys_path)),
-        ConcreteZkMLVerifier(),
+        ConcreteZkMLVerifier(zkml_store=Path(settings.zkml_proving_key_store) if settings.zkml_proving_key_store else None),
         StorageProofResolver(storage=storage),
     )
 

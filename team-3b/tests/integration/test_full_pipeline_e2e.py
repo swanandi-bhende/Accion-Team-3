@@ -17,18 +17,21 @@ from pathlib import Path
 from typing import Any
 
 import fakeredis.aioredis as fakeredis
+import onnxruntime
 import pytest
 
 from common.interfaces import StorageBackend
 from common.model_registry import ModelRegistry
 from common.models import AttestationReport, ProofArtifact, VerificationRequest
+from common.tensors import decode_tensor, encode_tensor
 from event_listener.listener import EventListener
 from inference.enclave_sim import EnclaveSim
 from inference.engine import InferenceEngine
-from inference.pipeline import OUTCOME_SUBMITTED, Pipeline
+from inference.pipeline import OUTCOME_SUBMITTED, PLACEHOLDER_INPUT, Pipeline
 from inference.tee_runtime import TEERuntime
 from proof_generator.zkml_prover import ZkMLProver
 from proof_submitter.submitter import PendingProof, ProofSubmitter
+from tests.onnx_fixtures import mlp_model_bytes
 from verification.interface import VerificationInterface
 from verification.resolver import StorageProofResolver
 from verification.verifiers import (
@@ -39,7 +42,7 @@ from verification.verifiers import (
 )
 
 MODEL_ARCHITECTURE = "mlp"
-MODEL_BINARY = b"MOCK_MLP_WEIGHTS_67890"
+MODEL_BINARY = mlp_model_bytes()
 BATCH_SIZE = 6
 
 FundedTaskFactory = Callable[[bytes], tuple[bytes, Any, Any]]
@@ -80,8 +83,9 @@ def wired(
     assert isinstance(tee.enclave, EnclaveSim)
     engine = InferenceEngine(registry, tee, redis_client, timeout_s=30.0)
     prover = ZkMLProver(registry, proving_key_store=str(tmp_path / "proving_keys"))
+    # The prover here is the development backend, so this test opts in to it explicitly.
     submitter = CapturingSubmitter(
-        ProofSubmitter(web3, task_manager, redis_client, batch_window=10.0)
+        ProofSubmitter(web3, task_manager, redis_client, batch_window=10.0, allow_development_backend=True)
     )
     listener = EventListener(web3, task_manager, escrow, redis_client)
     interface = VerificationInterface(
@@ -149,9 +153,12 @@ async def test_full_pipeline_settles_and_verifies_one_task(
     assert audit_entry[b"execution_id"].decode() == record.execution_id
     assert audit_entry[b"model_id"].decode() == model_id
 
-    # 4. real enclave output, not a stub: the simulator echoes its input back
+    # 4. the attested output is what the model computes on the pipeline's input, checked
+    # against ONNX Runtime called directly rather than through the sandbox
     _task_id, attestation, proof, model_cid = pipeline.submitter.submissions[0]
-    expected_output = b"simulated_output_for: " + b"pipeline-input:" + task_id_hex.encode()
+    session = onnxruntime.InferenceSession(MODEL_BINARY, providers=["CPUExecutionProvider"])
+    (model_output,) = session.run(None, {session.get_inputs()[0].name: decode_tensor(PLACEHOLDER_INPUT)})
+    expected_output = encode_tensor(model_output)
     assert attestation.output_hash == hashlib.sha256(expected_output).hexdigest()
     assert proof.public_inputs["output_hash"] == attestation.output_hash
     assert proof.public_inputs["architecture"] == MODEL_ARCHITECTURE

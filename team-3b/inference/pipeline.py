@@ -24,18 +24,25 @@ import asyncio
 import hashlib
 import json
 import logging
+import signal
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import redis.asyncio as redis
 from web3 import Web3
 
 from common.config import Settings, get_settings
 from common.exceptions import (
     IntegrityCheckFailedError,
+    ModelExecutionError,
     ModelNotFoundError,
+    ProofGenerationError,
+    ProofInconsistentError,
+    ProofNotSubmittableError,
+    ProvingKeysUnavailableError,
     StorageUnavailableError,
     TEEUnavailableError,
     TimeoutExceededError,
@@ -44,6 +51,7 @@ from common.exceptions import (
 from common.model_registry import ModelRegistry
 from common.models import ExecutionReceipt, InferenceRequest, VerificationRequest
 from common.storage.ipfs_backend import IPFSBackend
+from common.tensors import encode_tensor
 from event_listener.config import load_contract_abi
 from event_listener.listener import EventListener
 from inference.engine import InferenceEngine
@@ -64,6 +72,14 @@ OUTCOME_DROPPED_INFERENCE_ERROR = "dropped_inference_error"
 OUTCOME_DROPPED_PROOF_TIMEOUT = "dropped_proof_timeout"
 OUTCOME_DROPPED_UNSUPPORTED_ARCHITECTURE = "dropped_unsupported_architecture"
 OUTCOME_DROPPED_SUBMISSION_FAILED = "dropped_submission_failed"
+OUTCOME_DROPPED_PROOF_NOT_SUBMITTABLE = "dropped_proof_not_submittable"
+OUTCOME_DROPPED_PROOF_KEYS_MISSING = "dropped_proof_keys_missing"
+OUTCOME_DROPPED_PROOF_INCONSISTENT = "dropped_proof_inconsistent"
+OUTCOME_DROPPED_PROOF_FAILED = "dropped_proof_failed"
+
+# Placeholder input until tasks carry their own inputs (phase 2, step 5). A 1x4
+# float32 zero tensor matches the toy models the seed service registers.
+PLACEHOLDER_INPUT = encode_tensor(np.zeros((1, 4), dtype=np.float32))
 
 
 class TaskDropped(Exception):
@@ -259,7 +275,7 @@ class Pipeline:
     # ------------------------------------------------------------------ #
 
     def _default_input(self, task: dict[str, Any]) -> bytes:
-        return b"pipeline-input:" + self._task_id(task).encode()
+        return PLACEHOLDER_INPUT
 
     @staticmethod
     def _task_id(task: dict[str, Any]) -> str:
@@ -364,6 +380,8 @@ class Pipeline:
                     error,
                 )
                 await self.sleep(delay)
+            except ModelExecutionError as error:
+                raise TaskDropped(OUTCOME_DROPPED_INFERENCE_ERROR, str(error)) from error
             except IntegrityCheckFailedError as error:
                 raise TaskDropped(OUTCOME_DROPPED_INTEGRITY_FAILURE, str(error)) from error
             except ModelNotFoundError as error:
@@ -387,13 +405,19 @@ class Pipeline:
         except TEEUnavailableError as error:
             raise TaskDropped(OUTCOME_DROPPED_TEE_UNAVAILABLE, str(error)) from error
         try:
-            proof = await self.prover.generate_proof(receipt)
+            proof = await self.prover.generate_proof(receipt, request.input_data)
         except TimeoutError as error:
             raise TaskDropped(
                 OUTCOME_DROPPED_PROOF_TIMEOUT, f"zkML proof exceeded its timeout: {error}"
             ) from error
         except UnsupportedArchitectureError as error:
             raise TaskDropped(OUTCOME_DROPPED_UNSUPPORTED_ARCHITECTURE, str(error)) from error
+        except ProvingKeysUnavailableError as error:
+            raise TaskDropped(OUTCOME_DROPPED_PROOF_KEYS_MISSING, str(error)) from error
+        except ProofInconsistentError as error:
+            raise TaskDropped(OUTCOME_DROPPED_PROOF_INCONSISTENT, str(error)) from error
+        except ProofGenerationError as error:
+            raise TaskDropped(OUTCOME_DROPPED_PROOF_FAILED, str(error)) from error
         logger.info(
             "PIPELINE_PROOF_READY task_id=%s execution_id=%s architecture=%s public_inputs=%s",
             task_id,
@@ -415,6 +439,8 @@ class Pipeline:
         started = self.clock()
         try:
             pending = await self.submitter.submit_proof(task_id, attestation, proof, model_cid)
+        except ProofNotSubmittableError as error:
+            raise TaskDropped(OUTCOME_DROPPED_PROOF_NOT_SUBMITTABLE, str(error)) from error
         except Exception as error:
             raise TaskDropped(
                 OUTCOME_DROPPED_SUBMISSION_FAILED, f"{type(error).__name__}: {error}"
@@ -571,9 +597,17 @@ def build_pipeline(settings: Settings | None = None, **overrides: Any) -> Pipeli
     tee = TEERuntime(settings.tee_mode or "")
     tee.initialize()
     engine = InferenceEngine(
-        registry, tee, redis_client, timeout_s=settings.tee_inference_timeout_s
+        registry,
+        tee,
+        redis_client,
+        timeout_s=settings.tee_inference_timeout_s,
+        sealed_key=settings.sealed_key_bytes(),
     )
-    prover = ZkMLProver(registry, proving_key_store=settings.zkml_proving_key_store)
+    prover = ZkMLProver(
+        registry,
+        proving_key_store=settings.zkml_proving_key_store,
+        backend=settings.zkml_backend,
+    )
 
     web3 = Web3(Web3.HTTPProvider(settings.web3_rpc_url))
     task_manager = web3.eth.contract(
@@ -590,6 +624,7 @@ def build_pipeline(settings: Settings | None = None, **overrides: Any) -> Pipeli
         redis_client,
         private_key=settings.proof_submitter_private_key,
         batch_window=settings.proof_batch_window_s,
+        allow_development_backend=settings.proof_allow_development_backend,
     )
     listener = EventListener(web3, task_manager, escrow, redis_client)
 
@@ -608,10 +643,17 @@ def build_pipeline(settings: Settings | None = None, **overrides: Any) -> Pipeli
 async def _main() -> None:
     pipeline = build_pipeline()
     logger.info("PIPELINE_CONFIG max_in_flight=%s", pipeline.max_in_flight)
+    # As PID 1 in a container the process ignores SIGTERM unless it installs a handler, so
+    # `docker stop` would wait out its grace period and kill it. Stopping the listener ends
+    # the poll loop, and the finally block cancels the workers (and their proving children).
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, pipeline.listener.stop)
     try:
         await pipeline.start()
     finally:
         await pipeline.stop()
+    logger.info("PIPELINE_STOPPED")
 
 
 if __name__ == "__main__":

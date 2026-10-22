@@ -27,6 +27,8 @@ async def main() -> None:
     redis_client = redis.from_url(settings.redis_url, decode_responses=False)
     storage = IPFSBackend(node_url=settings.model_storage_url or "http://localhost:5001")
     registry = ModelRegistry(redis_client, storage)
+    # Finish any model upload that a previous run left queued.
+    await registry.resume_uploads()
 
     config = FLTaskConfig(
         task_id=settings.fl_task_id,

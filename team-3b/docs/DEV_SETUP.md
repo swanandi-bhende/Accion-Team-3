@@ -56,6 +56,14 @@ for the services that use them.
 
 Optional keys with working defaults: `TEE_INFERENCE_TIMEOUT_S` (30),
 `PROOF_BATCH_WINDOW_S` (10).
+`TEE_SEALED_KEY` (blank) is the 256-bit key that opens sealed models. Blank gives
+each engine its own random key, so a sealed model only runs in the process that
+sealed it. Services that share a sealed model must share this value.
+
+Model uploads are durable. `ModelRegistry.upload_model` writes the binary to
+`data/upload_spool/` and queues it in Redis before the first attempt. It retries
+with 5 s to 300 s backoff for as long as storage is unreachable (Requirement 7.5),
+and a restart finishes queued uploads through `resume_uploads()`.
 
 Read directly from the environment (not via `Settings`):
 `TEE_TRUSTED_KEYS_PATH` — a JSON map of `signer_id` to hex-encoded Ed25519
@@ -185,7 +193,7 @@ image never depends on a shell default:
 | --- | --- | --- | --- |
 | `inference-engine` | `inference/Dockerfile` | 8000 | `inference.app:app` |
 | `verification-api` | `verification/Dockerfile` | 8001 | `verification.app:create_default_app --factory` |
-| `event-listener` | `event_listener/Dockerfile` | — | long-running listener |
+| `pipeline` | `docker/pipeline.Dockerfile` | — | long-running listener feeding inference, proving and settlement |
 | `proof-submitter` | `proof_submitter/Dockerfile` | — | long-running submitter |
 | `fl-orchestrator` | `federated_learning/Dockerfile` | — | `python -m federated_learning.runner` |
 
@@ -202,15 +210,14 @@ uvicorn "verification.app:create_default_app" --factory --port 8001
 
 ## Service Startup Order
 
-Compose declares ten services. Dependencies (`depends_on`) make the real order:
-`redis` + `ipfs` → `hardhat-node` → `team-a-contracts` →
-`inference-engine` / `event-listener` / `proof-submitter` / `verification-api` /
-`fl-orchestrator`.
+Dependencies (`depends_on`) make the real order: `redis` + `ipfs` → `hardhat-node`
+→ `team-a-contracts` → `inference-engine` / `pipeline` / `proof-submitter` /
+`verification-api` / `fl-orchestrator`.
 
-There is no seed service: the Model Registry is populated by the Inference
-Engine at runtime. To pre-seed a model for manual testing, run
-`python -m scripts.ops.seed_model_registry` against the same `REDIS_URL` and
-`MODEL_STORAGE_URL` the Engine uses.
+The `seed-model` one-shot job registers the toy models (`toy_linear`, `toy_mlp`) and
+the model for the default task's description hash (`linear-model`) when the stack starts. The pipeline keys each model by its task's description hash, so a
+task settles only when a model is registered under that hash. Other tasks end as
+`dropped_model_not_found`.
 
 ## Troubleshooting
 - **Redis connection failed:** Ensure `docker-compose up -d redis` is running and port 6379 is available.

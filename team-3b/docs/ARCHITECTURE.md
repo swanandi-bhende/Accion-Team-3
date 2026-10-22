@@ -46,6 +46,10 @@ outcome vocabulary is the `OUTCOME_*` constants in `inference/pipeline.py`:
 | `TimeoutError` from proof generation (120 s budget) | log and drop — every other queued task keeps flowing | `dropped_proof_timeout` |
 | `UnsupportedArchitectureError` | log and drop — no circuit exists for this architecture | `dropped_unsupported_architecture` |
 | proof submission exhausts its retries | dead-letter to `proof_submitter:dlq` and continue | `dropped_submission_failed` |
+| proof from a backend that is not allowed on chain (development commitment by default) | refuse, nothing reaches the chain, and continue | `dropped_proof_not_submittable` |
+| no proving bundle for the model (EZKL backend) | log and drop until the bundle is built | `dropped_proof_keys_missing` |
+| the circuit's output differs from the TEE's beyond the quantization tolerance | log and drop, since the two describe different computations | `dropped_proof_inconsistent` |
+| the EZKL toolchain fails to prove an accepted input | log and drop | `dropped_proof_failed` |
 | anything unexpected | caught by a last-resort guard, logged with a traceback | `dropped_inference_error` |
 
 A drop is always logged with the correlation ids below, so a task that never

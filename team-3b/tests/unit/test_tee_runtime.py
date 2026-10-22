@@ -1,12 +1,21 @@
 import asyncio
+import hashlib
 import os
 from typing import cast
 from unittest.mock import AsyncMock, patch
 
+import numpy as np
 import pytest
 
 from common.exceptions import TEEUnavailableError
+from common.tensors import decode_tensor
 from inference.tee_runtime import TEERuntime
+from tests.onnx_fixtures import (
+    expected_linear_output,
+    linear_model_bytes,
+    tensor,
+    tensor_bytes,
+)
 
 
 def test_uninitialized_runtime_raises() -> None:
@@ -66,20 +75,23 @@ async def test_concurrent_execute_isolation() -> None:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     aesgcm = AESGCM(sealed_key)
 
-    model_binary = b"dummy_model"
-    import hashlib
+    model_binary = linear_model_bytes()
     model_hash = hashlib.sha256(model_binary).hexdigest()
 
     nonce = os.urandom(12)
     encrypted_data = nonce + aesgcm.encrypt(nonce, model_binary, None)
 
-    # Run two inferences concurrently
-    task1 = asyncio.create_task(rt.execute_inference(encrypted_data, model_hash, b"input1", sealed_key))
-    task2 = asyncio.create_task(rt.execute_inference(encrypted_data, model_hash, b"input2", sealed_key))
+    # Run two inferences concurrently, each with its own input
+    task1 = asyncio.create_task(
+        rt.execute_inference(encrypted_data, model_hash, tensor_bytes(seed=1), sealed_key)
+    )
+    task2 = asyncio.create_task(
+        rt.execute_inference(encrypted_data, model_hash, tensor_bytes(seed=2), sealed_key)
+    )
 
     res1, res2 = await asyncio.gather(task1, task2)
 
-    # EnclaveSim echoes back the input prefixed
-    assert b"input1" in res1
-    assert b"input2" in res2
-    assert res1 != res2
+    # Each output is the model applied to its own input, not the other request's.
+    assert np.allclose(decode_tensor(res1), expected_linear_output(tensor(seed=1)), atol=1e-5)
+    assert np.allclose(decode_tensor(res2), expected_linear_output(tensor(seed=2)), atol=1e-5)
+    assert not np.allclose(decode_tensor(res1), decode_tensor(res2))

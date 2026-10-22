@@ -9,6 +9,7 @@ from starlette.datastructures import State
 from common.config import get_settings
 from common.exceptions import (
     IntegrityCheckFailedError,
+    ModelExecutionError,
     ModelNotFoundError,
     TEEUnavailableError,
     TimeoutExceededError,
@@ -41,7 +42,8 @@ def build_app_state(app: FastAPI) -> State:
         registry=model_registry,
         tee=tee_runtime,
         redis_client=redis_client,
-        timeout_s=settings.tee_inference_timeout_s
+        timeout_s=settings.tee_inference_timeout_s,
+        sealed_key=settings.sealed_key_bytes(),
     )
 
     app.state.redis_client = redis_client
@@ -94,6 +96,12 @@ async def tee_unavailable_handler(request: Request, exc: TEEUnavailableError) ->
 async def integrity_check_handler(request: Request, exc: IntegrityCheckFailedError) -> JSONResponse:
     """Map IntegrityCheckFailedError to a 422 JSON response."""
     return JSONResponse(status_code=422, content={"error": "IntegrityCheckFailed", "detail": str(exc)})
+
+
+@app.exception_handler(ModelExecutionError)
+async def model_execution_handler(request: Request, exc: ModelExecutionError) -> JSONResponse:
+    """Report a model that cannot run on the input as 422 ModelExecutionFailed."""
+    return JSONResponse(status_code=422, content={"error": "ModelExecutionFailed", "detail": str(exc)})
 
 # Endpoints
 @app.post("/inference", response_model=ExecutionReceipt)

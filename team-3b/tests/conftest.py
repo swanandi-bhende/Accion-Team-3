@@ -82,3 +82,26 @@ def create_funded_task(team_a_chain: tuple[Web3, Contract, Contract]) -> Callabl
         return task_id, created, funded
 
     return create_and_fund
+
+
+_SESSION_STATUS: dict[str, int] = {"exit": 0}
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    _SESSION_STATUS["exit"] = int(exitstatus)
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Exit with the session's status, skipping interpreter teardown.
+
+    Native libraries that run threads in this process (onnxruntime, and the EZKL work that
+    shares it) can abort the interpreter during teardown with a libc++ mutex error, turning a
+    green run into exit status 134. Results are reported by this point, so the status is
+    returned directly. A failing run still fails.
+    """
+    import os
+    import sys
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(_SESSION_STATUS["exit"])

@@ -11,6 +11,7 @@ import pytest
 from eth_abi import encode as abi_encode
 from web3 import Web3
 
+from common.constants import DEVELOPMENT_PROOF_BACKEND
 from common.exceptions import ChainMismatchError, ConfigurationError
 from common.models import AttestationReport, ProofArtifact
 from common.web3_checks import (
@@ -194,6 +195,7 @@ def submitter(contract: FakeContract, redis_client: Any = None) -> ProofSubmitte
         redis_client=redis_client or fakeredis.FakeRedis(decode_responses=False),
         sleep=lambda _delay: asyncio.sleep(0),
         batch_window=0.0,
+        allow_development_backend=True,
     )
 
 
@@ -206,7 +208,12 @@ def payload(task_id: str) -> tuple[str, AttestationReport, ProofArtifact, str]:
         hardware_signature=b"sig",
         timestamp=1.0,
     )
-    proof = ProofArtifact(proof_bytes=b"proof", public_inputs={"output_hash": "o"}, verification_key_ref="vk")
+    proof = ProofArtifact(
+        proof_bytes=b"proof",
+        public_inputs={"output_hash": "o"},
+        verification_key_ref="vk",
+        backend=DEVELOPMENT_PROOF_BACKEND,
+    )
     return task_id, attestation, proof, "QmModel"
 
 

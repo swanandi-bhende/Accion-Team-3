@@ -34,7 +34,7 @@ To follow logs:
 
 ```bash
 docker compose logs -f inference-engine
-docker compose logs -f event-listener
+docker compose logs -f pipeline
 docker compose logs -f proof-submitter
 docker compose logs -f verification-api
 docker compose logs -f fl-orchestrator
@@ -52,28 +52,31 @@ stops at the first failure:
 2. **Redis.** `PING` answers `PONG`.
 3. **Chain.** The Hardhat node answers JSON-RPC with Team A's chain id, the
    contracts recorded in `deployments/galileo.json` have code on chain, and the
-   event-listener's environment holds those same addresses.
+   pipeline's environment holds those same addresses.
 4. **Inference.** The inference engine serves the seeded `toy_linear` model and
    returns an execution receipt.
-5. **Dispatch.** A task is created and funded on Team A's contracts
-   (`python -m scripts.ops.trigger_team_a_task`), and the running event-listener
-   records it as dispatched within `SMOKE_TASK_TIMEOUT` seconds (default 60). Set
-   `SMOKE_SKIP_TRIGGER=1` to skip this step.
+5. **Dispatch and processing.** A task is created and funded on Team A's contracts
+   (`python -m scripts.ops.trigger_team_a_task`). The check passes only when the
+   pipeline has dispatched the task (`"dispatched": true` in its listener state) and
+   logged `PIPELINE_TASK_COMPLETE` with `outcome=submitted`, within
+   `SMOKE_TASK_TIMEOUT` seconds (default 60). A task that is dispatched but dropped
+   fails the check and the line names the outcome. Set `SMOKE_SKIP_TRIGGER=1` to skip
+   this step.
 
 A healthy run ends with `== smoke_test_compose: end ==`. Every check prints one
 line:
 
 ```
 SERVICE=redis STATUS=succeeded ping=PONG
-SERVICE=contracts STATUS=succeeded TASK_MANAGER_ADDRESS=0x... code=present listener=matches
+SERVICE=contracts STATUS=succeeded TASK_MANAGER_ADDRESS=0x... code=present pipeline=matches
 SERVICE=inference-engine STATUS=succeeded model=toy_linear inference=receipt
-SERVICE=event-listener STATUS=succeeded task_id=0x... dispatched=true
+SERVICE=pipeline STATUS=succeeded task_id=0x... dispatched=true task_id=... execution_id=... outcome=submitted ...
 ```
 
 Any `STATUS=failed` line names the service and the reason. The most common causes
 are listed under [Troubleshooting](#troubleshooting).
 
-The worker processes (event-listener, proof-submitter) expose no ports. They
+The worker processes (pipeline, proof-submitter) expose no ports. They
 declare healthchecks, so their dependents wait on real readiness.
 
 ## Ports
@@ -179,13 +182,13 @@ key blank: they are the two things Team A has not delivered.
 - **Live source.** Mounts `common/`, `inference/`, `verification/` and
   `proof_generator/` read-only into the API containers and runs uvicorn with
   `--reload`, so Python edits take effect without a rebuild.
-- **Workers are not mounted.** The event-listener and proof-submitter are
+- **Workers are not mounted.** The pipeline and proof-submitter are
   long-running loops, and a bind-mounted module under a running loop gives
   surprising results. Rebuild and recreate them instead:
 
   ```bash
-  docker compose build event-listener
-  docker compose up -d --force-recreate event-listener
+  docker compose build pipeline
+  docker compose up -d --force-recreate pipeline
   ```
 
   The same applies to `proof-submitter`. Because the base image is shared, only
@@ -219,9 +222,19 @@ docker compose down        # stop; the workers get 30 s to finish in-flight work
 docker compose down -v     # also wipe Redis and IPFS volumes (clean registry and block state)
 ```
 
-On SIGTERM the event-listener finishes its current poll pass and persists its block
+On SIGTERM the pipeline finishes its current poll pass and persists its block
 progress, so it resumes from the last block on the next start. The proof-submitter
 flushes its pending batch before it exits.
+
+The listener's progress (block cursor and task records) lives in Redis, tied to the
+chain's genesis block hash. On every poll the pipeline compares that hash with the
+chain it is connected to. If they differ, because the node was reset or redeployed, it
+logs `CHAIN_CHANGED` and clears the progress from the old chain before reading new
+events. A chain reset therefore needs no manual cleanup.
+
+The one case it cannot decide alone is progress saved before the chain identity was
+recorded. It is kept if the block cursor is within the chain's head, and cleared if the
+cursor is past it.
 
 Clean rebuild, when images and volumes both need to go:
 
@@ -247,10 +260,28 @@ docker compose up --build -d
 The compose stack runs each component as its own service, but it does not yet run
 the whole path in one container:
 
-- **Inference, proof and settlement are not chained.** The event-listener dispatches
-  tasks, and the inference engine and proof-submitter run as separate services. The
-  composed inference → proof → settlement path runs in-process through
-  `python -m inference.pipeline`, which is not a compose service yet.
+- **The pipeline runs the chained path, but its submissions need registered models.**
+  The `pipeline` service runs the listener, inference, proving and settlement in one
+  process (`python -m inference.pipeline`). It keys each model by the task's
+  description hash, so a task only settles when a model is registered under that hash.
+  Other tasks end with `dropped_model_not_found`, which the smoke test reports as a
+  failure. The standalone `inference-engine` and `proof-submitter` services do not
+  receive tasks from the pipeline; the pipeline calls its own engine and submitter.
+- **This Mac's compose stack does not settle on chain.** Its images run the development
+  commitment, which is refused on chain, so each task is recorded as
+  `dropped_proof_not_submittable` and the smoke test fails at step 5. The EZKL backend is
+  wired in, but ezkl has no linux/arm64 wheel. Settlement returns on a linux/amd64 host
+  built with `INSTALL_ZKML=true` and `ZKML_BACKEND=ezkl`, after the bundles are built
+  (`docs/ZKML_SPIKE.md`, "The EZKL backend").
+
+To build the proving bundles on a host with EZKL installed:
+
+```bash
+pip install -r requirements/zkml.txt
+python -m scripts.zkml.build_proving_bundles
+```
+
+Each bundle takes about 20 seconds, and existing bundles are reused.
 - **fl-orchestrator is a one-shot job.** It trains the configured rounds, stores the
   model, and exits 0. The long-running Flower entrypoint is
   `federated_learning/network_runner.py`, and it is not part of this stack.
@@ -280,14 +311,18 @@ SMOKE_WAIT_TIMEOUT=600 scripts/ops/smoke_test_compose.sh
 ```
 
 **A service is unhealthy.** Run `docker compose ps` and confirm its dependencies
-report `healthy`. The event-listener and proof-submitter healthchecks depend on
+report `healthy`. The pipeline and proof-submitter healthchecks depend on
 Redis and, for the proof-submitter, the chain.
 
-**The smoke test says `dispatched` never appeared.** Check that the install ran:
+**The smoke test fails at step 5.** Check that the install ran:
 `docker compose logs team-a-contracts` should end with
 `TaskManager.isProver(owner)=True`, and the addresses in
-`deployments/galileo.json` should have code on chain. Then check the listener log
-for the task id the smoke test printed.
+`deployments/galileo.json` should have code on chain. Then check the pipeline log
+for the task id the smoke test printed. If the line shows `dispatched=0`, the
+pipeline never saw both events. Look for `CHAIN_CHANGED` in the same log: it means the
+chain was reset and the listener cleared its old progress, so a retry should see the
+new events. If it shows `outcome=dropped_model_not_found`, no model is registered
+under that task's description hash.
 
 **`PROOF_SUBMISSION_FAILED_PERMANENTLY` in proof-submitter logs.** The submitter
 retries three times, then dead-letters the batch to the Redis list

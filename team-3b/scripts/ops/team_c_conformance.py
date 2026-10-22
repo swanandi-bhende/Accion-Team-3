@@ -28,6 +28,8 @@ from typing import Any
 
 import httpx
 
+from common.tensors import decode_tensor
+
 ERROR, WARNING = "error", "warning"
 HEX_32 = re.compile(r"^[0-9a-f]{64}$")
 DOCUMENTED_FIELDS = ("model_id", "input_data", "task_id")
@@ -83,18 +85,16 @@ def validate_payload(payload: Mapping[str, Any]) -> list[Finding]:
                 Finding(ERROR, "input_data", "does not decode as base64; the documented encoding is base64")
             )
         else:
-            if decoded != input_data.encode():
+            try:
+                decode_tensor(decoded)
+            except ValueError:
                 findings.append(
                     Finding(
-                        WARNING,
+                        ERROR,
                         "input_data",
-                        "decodes to "
-                        f"{len(decoded)} bytes, but DRIFT-003 means the service hashes and executes this "
-                        "literal text instead of the decoded bytes",
+                        "decodes to bytes that are not an .npy tensor; the service runs models on .npy inputs",
                     )
                 )
-            elif not decoded:
-                findings.append(Finding(WARNING, "input_data", "decodes to empty bytes"))
 
     if "task_id" not in payload or payload.get("task_id") in (None, ""):
         findings.append(

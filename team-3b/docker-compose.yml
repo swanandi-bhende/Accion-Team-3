@@ -141,20 +141,27 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  event-listener:
-    # Time for an in-flight poll pass or proof batch to finish on SIGTERM.
+  pipeline:
+    # One process runs the listener and the stages it feeds. It replaces the old
+    # standalone event-listener: two consumers of the same listener state would
+    # race on event_listener:last_block and the per-task states.
+    # Time for in-flight inference, proving and batch flushes to finish on SIGTERM.
     stop_grace_period: 30s
     build:
       context: .
-      dockerfile: event_listener/Dockerfile
+      dockerfile: docker/pipeline.Dockerfile
       additional_contexts:
         base: service:base
+      args:
+        # ezkl has no linux/arm64 wheel: on this host the pipeline runs the development
+        # backend, which is never put on chain. Set both on a linux/amd64 host.
+        INSTALL_ZKML: ${INSTALL_ZKML:-false}
     environment:
-      - WEB3_WS_URL=ws://hardhat-node:8545
-      # .env points at localhost, which inside this container is the container
-      # itself; the listener polls the node over the compose network instead.
+      - ZKML_BACKEND=${ZKML_BACKEND:-development}
+      - TEE_MODE=sgx
       - WEB3_RPC_URL=http://hardhat-node:8545
       - REDIS_URL=redis://redis:6379
+      - MODEL_STORAGE_URL=http://ipfs:5001
       # The install step owns the addresses; reading them from the deployment
       # record is what makes the very first `up` work without recreating this
       # container.
@@ -163,11 +170,13 @@ services:
       # Contract ABIs are Team A's exports; the services read them at startup.
       - ./team_a_assets:/app/team_a_assets:ro
       - ./deployments:/app/deployments:ro
+      # Proving bundles, read-only: the pipeline only loads them.
+      - ./data/proving_keys:/app/data/proving_keys:ro
     env_file:
       - path: .env
         required: false
     healthcheck:
-      # This is a worker, not a web server: reaching its state store is liveness.
+      # The pipeline is a worker, not a web server: reaching its state store is liveness.
       test: ["CMD", "python", "-c", "import os, redis; redis.Redis.from_url(os.environ['REDIS_URL']).ping()"]
       interval: 15s
       timeout: 5s
@@ -176,11 +185,15 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      ipfs:
+        condition: service_healthy
       team-a-contracts:
         condition: service_completed_successfully
     restart: unless-stopped
 
   proof-submitter:
+    # Standalone submitter. Idle in this stack: the pipeline submits proofs from its own
+    # process and nothing feeds this service. Kept so it can run as a separate submitter.
     # Time for an in-flight poll pass or proof batch to finish on SIGTERM.
     stop_grace_period: 30s
     build:
@@ -222,8 +235,15 @@ services:
       dockerfile: verification/Dockerfile
       additional_contexts:
         base: service:base
+      args:
+        # EZKL has no linux/arm64 wheel. Set INSTALL_ZKML=true on a linux/amd64 host.
+        INSTALL_ZKML: ${INSTALL_ZKML:-false}
     environment:
       - MODEL_STORAGE_URL=http://ipfs:5001
+    volumes:
+      # Proving bundles built by scripts/zkml/build_proving_bundles.py. Read-only here:
+      # the verifier only loads them.
+      - ./data/proving_keys:/app/data/proving_keys:ro
     env_file:
       - path: .env
         required: false

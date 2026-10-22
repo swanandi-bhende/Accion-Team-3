@@ -1,19 +1,11 @@
-# Optional zkML toolchain (EZKL + ONNX).
+# EZKL, the production zkML backend (proof_generator/ezkl_backend.py). ONNX and
+# onnxruntime are in base.txt.
 #
-# These are NOT installed by the service images or by CI: the runtime proof path
-# is `proof_generator/zkml_prover.py`'s development-commitment backend, which is
-# pure Python. Only the EZKL spike/benchmark tooling imports these packages:
-#
-#     scripts/zkml/ezkl_mlp_benchmark.py
-#     scripts/zkml/manual_zkml_sanity_check.py
-#
-# ezkl==23.0.5 publishes no wheel for linux/arm64 or for Python 3.14, so keeping
-# it in requirements/base.txt made every Docker image fail to build on Apple Silicon
-# for a dependency the running code never imports.
-#
-# Install when working on the zkML toolchain evaluation:
+# The service images install this only when built with INSTALL_ZKML=true, and
+# ZKML_BACKEND=ezkl is then set at run time. ezkl==23.0.5 publishes an x86_64 wheel
+# but no linux/arm64 wheel, so on an Apple Silicon Docker host the images keep the
+# development backend. The pipeline refuses to start with ZKML_BACKEND=ezkl when
+# the package is missing.
 #
 #     pip install -r requirements/zkml.txt
 ezkl==23.0.5
-onnx==1.23.0
-onnxruntime==1.30.0

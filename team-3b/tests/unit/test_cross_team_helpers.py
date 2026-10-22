@@ -6,6 +6,7 @@ import pytest
 
 from scripts.ops import cross_team_e2e, team_a
 from scripts.ops.team_a_preflight import Check, failed, render
+from tests.onnx_fixtures import tensor_b64
 
 
 def test_reference_payload_fills_task_and_model() -> None:
@@ -38,7 +39,7 @@ def test_receipt_findings_report_a_wrong_model() -> None:
         "output": "aGVsbG8=",
         "timestamp": 1.0,
     }
-    payload = {"model_id": "toy_linear", "input_data": "aGVsbG8=", "task_id": "7"}
+    payload = {"model_id": "toy_linear", "input_data": tensor_b64(), "task_id": "7"}
 
     findings = cross_team_e2e.receipt_findings(receipt, payload)
 

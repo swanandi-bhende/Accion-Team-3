@@ -9,7 +9,15 @@ import asyncio
 import base64
 import time
 
+import numpy as np
 from httpx import AsyncClient
+
+from common.tensors import encode_tensor
+
+
+def _load_input(index: int) -> np.ndarray:
+    """A distinct 1x4 float32 input per request, matching the seeded toy models."""
+    return np.asarray(np.random.default_rng(seed=index).normal(size=(1, 4)), dtype=np.float32)
 
 # This script is meant to be run against the live docker-compose stack
 # python scripts/ops/load_test_inference.py --url http://localhost:8000
@@ -54,7 +62,7 @@ async def main() -> None:
         tasks = []
         for i in range(args.concurrency):
             model_id = "toy_linear" if i % 2 == 0 else "invalid_model_for_404"
-            tasks.append(fire_request(client, args.url, model_id, f"load_test_input_{i}".encode(), i))
+            tasks.append(fire_request(client, args.url, model_id, encode_tensor(_load_input(i)), i))
 
         print("Firing requests...")
         results = await asyncio.gather(*tasks)

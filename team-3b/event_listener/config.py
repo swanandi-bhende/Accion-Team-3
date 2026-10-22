@@ -19,7 +19,7 @@ def _websocket_provider_factory() -> Any:
 
     web3 >= 7 only exposes an asynchronous, persistent ``WebSocketProvider``,
     which the synchronous ``Web3`` client rejects. The listener polls with
-    filters and ``get_all_entries`` rather than subscribing, so when no
+    ``eth_getLogs`` rather than subscribing, so when no
     synchronous provider exists the transport falls back to HTTP instead of
     refusing to start.
     """

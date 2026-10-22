@@ -206,13 +206,25 @@ Expected payload pushed by Team C's agent when triggering execution (or resolved
 ```json
 {
   "model_id": "string",
-  "input_data": "base64_encoded_bytes",
+  "input_data": "base64 of a .npy file holding a float32 tensor of shape (rows, features)",
   "task_id": "string (optional)"
 }
 ```
 
-Known drift: the service currently treats `input_data` as raw bytes rather than
-decoding base64 (DRIFT-003 in INTEGRATION_LOG.md).
+`input_data` is base64 text. The service decodes it to the `.npy` bytes of a NumPy
+array, which is the model's input tensor. Pickle is never read. DRIFT-003 (base64
+was not decoded) is resolved, and DRIFT-015 records the format as a proposal that
+Team C has not yet agreed.
+
+The response is an `ExecutionReceipt`. Its `output` field is the base64 of the
+model's output as a `.npy` file, and `output_hash` is the SHA-256 of those bytes.
+
+### Model format
+
+A registered model is an ONNX file with one float32 input and one float32 output.
+Architectures that can run today are `linear` and `mlp`. `cnn` and
+`transformer_small` are accepted by the zkML path but cannot run until a model of
+that shape is registered and tested.
 
 ### Handoff checklist for Team C
 

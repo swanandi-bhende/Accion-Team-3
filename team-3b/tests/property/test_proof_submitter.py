@@ -10,6 +10,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from common.constants import DEVELOPMENT_PROOF_BACKEND
 from common.models import AttestationReport, ProofArtifact
 from proof_submitter import ProofSubmitter
 from proof_submitter.submitter import PendingProof
@@ -24,7 +25,14 @@ def payload(task_id: str, output_hash: str = "output") -> tuple[str, Attestation
         hardware_signature=b"signature",
         timestamp=1.0,
     )
-    proof = ProofArtifact(proof_bytes=b"proof-" + task_id.encode(), public_inputs={"output_hash": output_hash}, verification_key_ref="vk")
+    # Batching and dead-letter behaviour is under test here, not the backend, so the proof
+    # is a development-backend stand-in and the submitter opts in to it explicitly.
+    proof = ProofArtifact(
+        proof_bytes=b"proof-" + task_id.encode(),
+        public_inputs={"output_hash": output_hash},
+        verification_key_ref="vk",
+        backend=DEVELOPMENT_PROOF_BACKEND,
+    )
     return task_id, attestation, proof, "QmModel"
 
 
@@ -35,6 +43,7 @@ def submitter(sleep: Callable[[float], Any] | None = None) -> ProofSubmitter:
         redis_client=fakeredis.FakeRedis(decode_responses=False),
         sleep=sleep or (lambda delay: asyncio.sleep(0)),
         batch_window=10.0,
+        allow_development_backend=True,
     )
 
 
@@ -82,7 +91,12 @@ async def test_property_16_transaction_payload_contains_all_batch_arrays() -> No
 
         eth = Eth()
 
-    instance = ProofSubmitter(Web3(), SimpleNamespace(functions=Functions()), fakeredis.FakeRedis(decode_responses=False))
+    instance = ProofSubmitter(
+        Web3(),
+        SimpleNamespace(functions=Functions()),
+        fakeredis.FakeRedis(decode_responses=False),
+        allow_development_backend=True,
+    )
     proofs = [await instance.submit_proof(*payload("payload-one")), await instance.submit_proof(*payload("payload-two"))]
     instance._batch_timer.cancel()  # type: ignore[union-attr]
     await instance._send_transaction(proofs)

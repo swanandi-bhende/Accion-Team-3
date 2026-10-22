@@ -1,9 +1,9 @@
 """Team C contract checks: the payload we documented, and the response we send."""
 
-import base64
 from typing import Any
 
 from scripts.ops.team_c_conformance import validate_payload, validate_receipt
+from tests.onnx_fixtures import tensor_b64
 
 HEX = "ab" * 32
 RECEIPT: dict[str, Any] = {
@@ -29,7 +29,7 @@ def test_documented_payload_has_no_errors() -> None:
     findings = validate_payload(
         {
             "model_id": "toy_linear",
-            "input_data": base64.b64encode(b"hello").decode(),
+            "input_data": tensor_b64(),
             "task_id": "0x" + "01" * 32,
         }
     )
@@ -38,7 +38,7 @@ def test_documented_payload_has_no_errors() -> None:
 
 
 def test_missing_model_id_is_an_error() -> None:
-    findings = validate_payload({"input_data": "aGVsbG8="})
+    findings = validate_payload({"input_data": tensor_b64()})
 
     assert errors(findings) == ["model_id"]
 
@@ -49,24 +49,23 @@ def test_non_base64_input_is_an_error_because_the_document_requires_base64() -> 
     assert errors(findings) == ["input_data"]
 
 
-def test_plain_text_that_happens_to_be_base64_raises_the_encoding_drift() -> None:
-    # "aGVs" is itself valid base64 (it decodes to three other bytes), which is
-    # exactly how DRIFT-003 slips through unnoticed.
+def test_base64_that_is_not_a_tensor_is_an_error() -> None:
+    # "aGVs" is valid base64 for three bytes, but they are not an .npy tensor, so
+    # the service would reject it when it tries to run the model.
     findings = validate_payload({"model_id": "toy_linear", "input_data": "aGVs", "task_id": "7"})
 
-    assert errors(findings) == []
-    assert "input_data" in warnings(findings)
+    assert errors(findings) == ["input_data"]
 
 
 def test_absent_task_id_warns_that_the_response_cannot_be_correlated() -> None:
-    findings = validate_payload({"model_id": "toy_linear", "input_data": "aGVsbG8="})
+    findings = validate_payload({"model_id": "toy_linear", "input_data": tensor_b64()})
 
     assert "task_id" in warnings(findings)
 
 
 def test_task_id_that_is_not_bytes32_hex_warns() -> None:
     findings = validate_payload(
-        {"model_id": "toy_linear", "input_data": "aGVsbG8=", "task_id": "0x1234"}
+        {"model_id": "toy_linear", "input_data": tensor_b64(), "task_id": "0x1234"}
     )
 
     assert "task_id" in warnings(findings)
@@ -74,7 +73,7 @@ def test_task_id_that_is_not_bytes32_hex_warns() -> None:
 
 def test_undocumented_field_warns_rather_than_failing() -> None:
     findings = validate_payload(
-        {"model_id": "toy_linear", "input_data": "aGVsbG8=", "task_id": "7", "priority": 1}
+        {"model_id": "toy_linear", "input_data": tensor_b64(), "task_id": "7", "priority": 1}
     )
 
     assert errors(findings) == []

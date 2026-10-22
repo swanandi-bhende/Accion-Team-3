@@ -7,6 +7,7 @@ import pytest
 from eth_typing import HexStr
 from web3 import Web3
 
+from common.constants import DEVELOPMENT_PROOF_BACKEND
 from common.models import AttestationReport, ProofArtifact
 from proof_submitter import ProofSubmitter
 from proof_submitter.submitter import PendingProof
@@ -32,6 +33,7 @@ async def test_submitter_sends_real_batched_submit_proofs(deployed_task_manager:
         web3,
         contract,
         fakeredis.FakeRedis(decode_responses=False),
+        allow_development_backend=True,
     )
     attestation = AttestationReport(
         enclave_measurement="measurement",
@@ -45,7 +47,12 @@ async def test_submitter_sends_real_batched_submit_proofs(deployed_task_manager:
         await submitter.submit_proof(
             f"task-{index}",
             attestation,
-            ProofArtifact(proof_bytes=f"proof-{index}".encode(), public_inputs={"output_hash": "output"}, verification_key_ref="vk"),
+            ProofArtifact(
+                proof_bytes=f"proof-{index}".encode(),
+                public_inputs={"output_hash": "output"},
+                verification_key_ref="vk",
+                backend=DEVELOPMENT_PROOF_BACKEND,
+            ),
             "QmModel",
         )
         for index in range(3)
@@ -70,7 +77,7 @@ async def test_resubmitting_an_accepted_proof_neither_double_records_nor_dead_le
     web3, task_manager, _escrow = team_a_chain
     task_id, _created, _funded = create_funded_task(hashlib.sha256(b"resubmit-proof").digest())
     redis_client = fakeredis.FakeRedis(decode_responses=False)
-    submitter = ProofSubmitter(web3, task_manager, redis_client)
+    submitter = ProofSubmitter(web3, task_manager, redis_client, allow_development_backend=True)
     attestation = AttestationReport(
         enclave_measurement="measurement",
         signer_identity="signer",
@@ -82,7 +89,12 @@ async def test_resubmitting_an_accepted_proof_neither_double_records_nor_dead_le
     proof = PendingProof(
         "0x" + bytes(task_id).hex(),
         attestation,
-        ProofArtifact(proof_bytes=b"proof-resubmit", public_inputs={"output_hash": "output"}, verification_key_ref="vk"),
+        ProofArtifact(
+            proof_bytes=b"proof-resubmit",
+            public_inputs={"output_hash": "output"},
+            verification_key_ref="vk",
+            backend=DEVELOPMENT_PROOF_BACKEND,
+        ),
         "QmResubmit",
         "11" * 32,
         "22" * 32,

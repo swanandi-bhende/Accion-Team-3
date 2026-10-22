@@ -1,12 +1,17 @@
 import asyncio
 import ctypes
 import sys
+from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from common.exceptions import ModelExecutionError
 from common.interfaces import Enclave
+from inference.sandbox import frame
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class EnclaveSim(Enclave):
@@ -66,35 +71,40 @@ class EnclaveSim(Enclave):
         return plaintext
 
     async def run_isolated(self, model: bytes, input_data: bytes) -> bytes:
-        """Echo input_data through a separate Python process. The model is not executed.
+        """Run an ONNX model on one encoded input in a new child process.
 
-        The simulator only demonstrates a process boundary; the model argument is unused.
+        The child is ``inference.sandbox``, so each request has its own memory and
+        interpreter. The child is killed if this call is cancelled, for example when the
+        engine's timeout fires, so no process outlives a timed-out request.
 
         Args:
-            model: Decrypted model bytes. Ignored by the simulator.
-            input_data: Bytes piped to the subprocess on stdin.
+            model: Decrypted ONNX model bytes.
+            input_data: Input tensor encoded as ``.npy`` bytes.
 
         Returns:
-            The subprocess output, ``b"simulated_output_for: " + input_data``.
+            The first output of the model, encoded as ``.npy`` bytes.
 
         Raises:
-            RuntimeError: If the subprocess exits with a non-zero status.
+            ModelExecutionError: If the bytes are not a runnable ONNX model, the input does
+                not match the model, or the runtime fails.
         """
-        # Simulate isolated OS subprocess by actually using asyncio subprocess
-        # In a real enclave this would be hardware isolated execution.
-        # For the mock, we just run a python subprocess that echoes back a dummy result
-        # to ensure it actually crosses a process boundary.
-
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, '-c',
-            'import sys; sys.stdout.buffer.write(b"simulated_output_for: " + sys.stdin.buffer.read())',
+            sys.executable, "-m", "inference.sandbox",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            cwd=ROOT,
         )
-        stdout, _ = await proc.communicate(input=input_data)
+        try:
+            stdout, stderr = await proc.communicate(input=frame(model) + frame(input_data))
+        except asyncio.CancelledError:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+            raise
         if proc.returncode != 0:
-            raise RuntimeError("Subprocess execution failed")
+            detail = stderr.decode(errors="replace").strip() or f"exit status {proc.returncode}"
+            raise ModelExecutionError(detail)
         return stdout
 
     def secure_erase(self, data: bytes) -> None:

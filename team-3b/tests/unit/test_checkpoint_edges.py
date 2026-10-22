@@ -6,11 +6,12 @@ from unittest.mock import AsyncMock, patch
 import fakeredis.aioredis as fakeredis
 import pytest
 
-from common.exceptions import TimeoutExceededError
+from common.exceptions import ModelExecutionError, TimeoutExceededError
 from common.model_registry import ModelRegistry
 from common.models import InferenceRequest
 from inference.engine import InferenceEngine
 from inference.tee_runtime import TEERuntime
+from tests.onnx_fixtures import linear_model_bytes, tensor_bytes
 from tests.property.test_model_registry_prop import MockStorageBackend
 
 
@@ -26,18 +27,29 @@ def build_engine(
 
 
 @pytest.mark.asyncio
-async def test_empty_input_data_produces_a_receipt() -> None:
+async def test_empty_input_data_is_rejected_as_not_a_tensor() -> None:
     engine, registry, storage = build_engine()
-    model_binary = b"empty-input-model"
+    model_binary = linear_model_bytes()
     cid = await storage.upload(model_binary)
     await registry.register("model:with spaces/and:punctuation", cid, model_binary)
 
-    receipt = await engine.execute(
-        InferenceRequest(model_id="model:with spaces/and:punctuation", input_data=b"")
-    )
+    with pytest.raises(ModelExecutionError):
+        await engine.execute(
+            InferenceRequest(model_id="model:with spaces/and:punctuation", input_data=b"")
+        )
 
-    assert receipt.input_hash
-    assert receipt.output
+
+@pytest.mark.asyncio
+async def test_model_that_cannot_run_produces_no_receipt_and_no_audit_entry() -> None:
+    engine, registry, storage = build_engine()
+    model_binary = b"not-an-onnx-model"
+    cid = await storage.upload(model_binary)
+    await registry.register("not-runnable", cid, model_binary)
+
+    with pytest.raises(ModelExecutionError):
+        await engine.execute(InferenceRequest(model_id="not-runnable", input_data=tensor_bytes()))
+
+    assert await engine.redis.xread({"inference:audit_log": "0"}) == []
 
 
 @pytest.mark.asyncio
@@ -57,7 +69,7 @@ async def test_unusual_model_id_is_stored_and_resolved_exactly() -> None:
 @pytest.mark.asyncio
 async def test_timeout_boundary_uses_exactly_30_seconds() -> None:
     engine, registry, storage = build_engine(timeout_s=30.0)
-    model_binary = b"timeout-boundary-model"
+    model_binary = linear_model_bytes()
     cid = await storage.upload(model_binary)
     await registry.register("timeout-boundary", cid, model_binary)
 
@@ -67,7 +79,7 @@ async def test_timeout_boundary_uses_exactly_30_seconds() -> None:
 
     with patch("inference.engine.asyncio.wait_for", side_effect=record_wait_for):
         receipt = await engine.execute(
-            InferenceRequest(model_id="timeout-boundary", input_data=b"input")
+            InferenceRequest(model_id="timeout-boundary", input_data=tensor_bytes())
         )
 
     assert receipt.model_id == "timeout-boundary"

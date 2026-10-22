@@ -10,20 +10,12 @@ from hypothesis import strategies as st
 from event_listener.listener import EventListener
 
 
-class FakeFilter:
-    def __init__(self, events: list[dict[str, Any]]) -> None:
-        self.events = events
-
-    def get_all_entries(self) -> list[dict[str, Any]]:
-        return list(self.events)
-
-
 class FakeEventFactory:
     def __init__(self, events: list[dict[str, Any]]) -> None:
         self.events = events
 
-    def create_filter(self, **kwargs: Any) -> FakeFilter:
-        return FakeFilter(self.events)
+    def get_logs(self, from_block: int | None = None, to_block: Any = None, **kwargs: Any) -> list[dict[str, Any]]:
+        return list(self.events)
 
 
 class FakeContract:

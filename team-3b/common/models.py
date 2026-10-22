@@ -1,7 +1,10 @@
 """Common models and types for the Verifiable AI Execution subsystem."""
 
 
-from pydantic import BaseModel, model_validator
+import base64
+import binascii
+
+from pydantic import BaseModel, field_serializer, field_validator, model_validator
 
 
 class InferenceRequest(BaseModel):
@@ -10,6 +13,20 @@ class InferenceRequest(BaseModel):
     model_id: str
     input_data: bytes
     task_id: str | None = None
+
+    @field_validator("input_data", mode="before")
+    @classmethod
+    def _decode_base64_text(cls, value: object) -> object:
+        """Decode ``input_data`` sent as base64 text, the form JSON clients use.
+
+        Raw bytes pass through unchanged, so Python callers can keep passing bytes.
+        """
+        if isinstance(value, str):
+            try:
+                return base64.b64decode(value, validate=True)
+            except binascii.Error as error:
+                raise ValueError("input_data must be base64-encoded text") from error
+        return value
 
 class ExecutionReceipt(BaseModel):
     """Record of one inference run, with hashes of its input and output.
@@ -24,6 +41,14 @@ class ExecutionReceipt(BaseModel):
     output_hash: str
     output: bytes
     timestamp: float
+
+    @field_serializer("output", when_used="json")
+    def _encode_output_base64(self, value: bytes) -> str:
+        """Send ``output`` as base64 text, the same encoding inference inputs use.
+
+        ``.npy`` outputs are binary, so UTF-8 text would not round-trip them.
+        """
+        return base64.b64encode(value).decode("ascii")
 
 class AttestationReport(BaseModel):
     """Signed statement from an enclave about one inference run.
@@ -48,6 +73,9 @@ class ProofArtifact(BaseModel):
     proof_bytes: bytes
     public_inputs: dict
     verification_key_ref: str
+    # Backend that produced the bytes. The proof submitter sends a proof on chain only if
+    # its backend is allowed there. An artifact without a backend is refused.
+    backend: str = "unknown"
 
 
 class VerificationRequest(BaseModel):

@@ -9,6 +9,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from common.constants import DEVELOPMENT_PROOF_BACKEND, PRODUCTION_PROOF_BACKENDS
+from common.exceptions import ProofNotSubmittableError
 from common.models import AttestationReport, ProofArtifact
 
 logger = logging.getLogger(__name__)
@@ -65,6 +67,7 @@ class ProofSubmitter:
         sleep: Callable[[float], Any] = asyncio.sleep,
         clock: Callable[[], float] = time.time,
         signer_address: str | None = None,
+        allow_development_backend: bool = False,
     ):
         self.web3 = web3
         self.contract = contract
@@ -73,6 +76,9 @@ class ProofSubmitter:
         # On a real network the node has no unlocked accounts, so the sender must
         # be resolved from the private key before the first transaction.
         self.signer_address = signer_address
+        # Off by default: development-commitment proofs are not zero-knowledge. Only a
+        # test passes True, to exercise the chain path with them.
+        self.allow_development_backend = allow_development_backend
         self.batch_window = batch_window
         self.sleep = sleep
         self.clock = clock
@@ -92,6 +98,12 @@ class ProofSubmitter:
             "rejected_by_contract": 0,
         }
 
+    def _may_submit(self, zkml_proof: ProofArtifact) -> bool:
+        """Only zero-knowledge backends reach the chain. The development backend needs opt-in."""
+        if zkml_proof.backend in PRODUCTION_PROOF_BACKENDS:
+            return True
+        return self.allow_development_backend and zkml_proof.backend == DEVELOPMENT_PROOF_BACKEND
+
     async def submit_proof(
         self,
         task_id: str,
@@ -104,7 +116,12 @@ class ProofSubmitter:
         Returns:
             The queued ``PendingProof``. Its transaction is sent when the batch window
             ends or when ``flush`` is called.
+
+        Raises:
+            ProofNotSubmittableError: the proof's backend is not allowed on chain.
         """
+        if not self._may_submit(zkml_proof):
+            raise ProofNotSubmittableError(zkml_proof.backend)
         proof_hash = hashlib.sha256(zkml_proof.proof_bytes + attestation.hardware_signature).hexdigest()
         result_hash = zkml_proof.public_inputs.get("output_hash", attestation.output_hash)
         pending = PendingProof(task_id, attestation, zkml_proof, model_cid, proof_hash, result_hash, self.clock())

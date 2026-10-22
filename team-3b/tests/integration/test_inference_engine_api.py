@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import fakeredis.aioredis as fakeredis
+import numpy as np
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -21,8 +22,15 @@ os.environ["PROOF_SUBMITTER_PRIVATE_KEY"] = "0x000000000000000000000000000000000
 os.environ["ZKML_PROVING_KEY_STORE"] = "./data/proving_keys"
 os.environ["ZKML_SUPPORTED_ARCHITECTURES"] = "linear"
 from common.model_registry import ModelRegistry
+from common.tensors import decode_tensor
 from inference.app import app
 from inference.engine import InferenceEngine
+from tests.onnx_fixtures import (
+    expected_linear_output,
+    linear_model_bytes,
+    tensor,
+    tensor_bytes,
+)
 from tests.property.test_model_registry_prop import MockStorageBackend
 
 
@@ -45,17 +53,11 @@ async def override_deps() -> AsyncIterator[InferenceEngine]:
     app.state.tee_runtime = tee
     app.state.inference_engine = engine
 
-    # We must seed a valid encrypted model for tests that expect 200 OK
-    model_binary = b"api_test_model"
-    import os
-
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    aesgcm = AESGCM(engine.sealed_key)
-    nonce = os.urandom(12)
-    encrypted_data = nonce + aesgcm.encrypt(nonce, model_binary, None)
-
-    cid = await storage.upload(encrypted_data)
-    await registry.register("api_seeded_model", cid, encrypted_data)
+    # A real ONNX model, registered as plaintext: the registry hashes the bytes it is
+    # given, so an encrypted blob would be hashed as is and never decrypted.
+    model_binary = linear_model_bytes()
+    cid = await storage.upload(model_binary)
+    await registry.register("api_seeded_model", cid, model_binary)
 
     yield engine
 
@@ -70,7 +72,7 @@ async def test_health_check(override_deps: InferenceEngine) -> None:
 async def test_post_inference_success(override_deps: InferenceEngine) -> None:
     payload = {
         "model_id": "api_seeded_model",
-        "input_data": base64.b64encode(b"test_input").decode("utf-8")
+        "input_data": base64.b64encode(tensor_bytes()).decode("utf-8"),
     }
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.post("/inference", json=payload)
@@ -79,6 +81,8 @@ async def test_post_inference_success(override_deps: InferenceEngine) -> None:
     data = response.json()
     assert "execution_id" in data
     assert data["model_id"] == "api_seeded_model"
+    output = decode_tensor(base64.b64decode(data["output"]))
+    assert np.allclose(output, expected_linear_output(tensor()), atol=1e-5)
 
 @pytest.mark.asyncio
 async def test_post_inference_404_not_found(override_deps: InferenceEngine) -> None:
