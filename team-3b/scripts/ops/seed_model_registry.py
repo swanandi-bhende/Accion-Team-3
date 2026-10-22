@@ -18,7 +18,7 @@ import redis.asyncio as redis
 from common.config import get_settings
 from common.model_registry import ModelRegistry
 from common.onnx_models import linear_model, mlp_model
-from common.storage.ipfs_backend import IPFSBackend
+from common.storage.factory import build_storage_backend
 
 # The pipeline keys a model by its task's description hash, and the default task from
 # scripts/ops/trigger_team_a_task.py has the description "linear-model". Registering the
@@ -49,7 +49,7 @@ async def seed_models() -> None:
     """Upload toy models in ``MODELS`` unless already registered with the same hash."""
     settings = get_settings().require("redis_url", "model_storage_url")
     redis_client = redis.from_url(settings.redis_url, decode_responses=False)
-    storage = IPFSBackend(node_url=settings.model_storage_url or "http://localhost:5001")
+    storage = build_storage_backend(settings)
     registry = ModelRegistry(redis_client, storage)
     await registry.resume_uploads()
 

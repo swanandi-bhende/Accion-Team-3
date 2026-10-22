@@ -12,7 +12,7 @@ import redis.asyncio as redis
 from common.config import get_settings
 from common.model_registry import ModelRegistry
 from common.models import FLTaskConfig
-from common.storage.ipfs_backend import IPFSBackend
+from common.storage.factory import build_storage_backend
 from federated_learning.orchestrator import FederatedLearningOrchestrator
 from federated_learning.simulated_client import make_simulated_clients
 
@@ -25,7 +25,7 @@ async def main() -> None:
     """
     settings = get_settings().require("redis_url", "model_storage_url")
     redis_client = redis.from_url(settings.redis_url, decode_responses=False)
-    storage = IPFSBackend(node_url=settings.model_storage_url or "http://localhost:5001")
+    storage = build_storage_backend(settings)
     registry = ModelRegistry(redis_client, storage)
     # Finish any model upload that a previous run left queued.
     await registry.resume_uploads()

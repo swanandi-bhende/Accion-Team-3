@@ -54,7 +54,7 @@ def _setup_runner_env(monkeypatch: pytest.MonkeyPatch) -> tuple[Redis, InMemoryS
 
     # Override the Redis and storage factories so real network I/O does not happen.
     monkeypatch.setattr(runner.redis, "from_url", lambda *args, **kwargs: redis_client)
-    monkeypatch.setattr(runner, "IPFSBackend", lambda node_url: storage)
+    monkeypatch.setattr("common.storage.factory.IPFSBackend", lambda node_url: storage)
 
     # make the entrypoint pick up the monkeypatched env
     _common_config.get_settings.cache_clear()

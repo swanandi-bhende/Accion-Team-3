@@ -29,6 +29,17 @@ RUN pip install --upgrade pip \
  && pip install --retries 10 --timeout 120 -r requirements/base.txt
 
 
+# The 0G Storage CLI, built from source at a pinned commit. The 0G model backend
+# (MODEL_STORAGE_BACKEND=0g) runs it; IPFS deployments never call it.
+FROM golang:1.26-bookworm AS zg-storage-client
+
+ARG ZG_STORAGE_CLIENT_REF=bb5675461a96b654d3015c5522666ee8101cf810
+RUN git clone https://github.com/0gfoundation/0g-storage-client.git /src \
+ && cd /src \
+ && git checkout "${ZG_STORAGE_CLIENT_REF}" \
+ && CGO_ENABLED=0 go build -o /out/0g-storage-client .
+
+
 FROM python:3.11-slim AS base
 
 ENV PATH="/opt/venv/bin:$PATH" \
@@ -41,6 +52,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=zg-storage-client /out/0g-storage-client /usr/local/bin/0g-storage-client
 
 # Services run unprivileged; /app/data is the one writable location they need
 # (proving keys, local scratch). Images that must install extra packages switch

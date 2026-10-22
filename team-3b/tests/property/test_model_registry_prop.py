@@ -1,4 +1,8 @@
+import asyncio
 import hashlib
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
 import fakeredis.aioredis as fakeredis
 import pytest
@@ -6,7 +10,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from redis.asyncio import Redis
 
-from common.exceptions import IntegrityCheckFailedError
+from common.exceptions import IntegrityCheckFailedError, StorageUnavailableError
 from common.interfaces import StorageBackend
 from common.model_registry import ModelRegistry
 
@@ -86,12 +90,37 @@ async def test_property_20_cid_validation_before_reference(model_id: str, model_
 
 
 
-def test_property_15_exponential_backoff_bounds() -> None:
-    """Property 15: Exponential backoff delay bounds."""
-    base = ModelRegistry.UPLOAD_BACKOFF_BASE
-    max_delay = ModelRegistry.UPLOAD_BACKOFF_MAX
+class FlakyStorage(MockStorageBackend):
+    """Fails the first ``fail_count`` uploads with an outage, then behaves normally."""
 
-    for n in range(1, 10):
-        expected = min(base * (2 ** (n - 1)), max_delay)
-        # We test the logic explicitly
-        assert expected <= max_delay
+    def __init__(self, fail_count: int) -> None:
+        super().__init__()
+        self.fail_count = fail_count
+
+    async def upload(self, data: bytes) -> str:
+        if self.fail_count > 0:
+            self.fail_count -= 1
+            raise StorageUnavailableError("simulated outage")
+        return await super().upload(data)
+
+
+@settings(max_examples=50, deadline=None)
+@given(fail_count=st.integers(min_value=0, max_value=20))
+def test_property_15_exponential_backoff_bounds(fail_count: int) -> None:
+    """Property 15: retries wait 5 s, double each time, and never wait more than 300 s (Requirement 7.5).
+
+    The expected delays are the spec's numbers, not the registry's constants, so the test
+    fails if either the starting delay or the cap changes.
+    """
+    delays: list[float] = []
+
+    async def record(delay: float) -> None:
+        delays.append(delay)
+
+    async def upload() -> None:
+        with tempfile.TemporaryDirectory() as spool, patch("common.model_registry.asyncio.sleep", record):
+            registry = ModelRegistry(fakeredis.FakeRedis(decode_responses=False), FlakyStorage(fail_count), spool_dir=Path(spool))
+            await registry.upload_model("prop_model", b"model-bytes")
+
+    asyncio.run(upload())
+    assert delays == [min(5.0 * 2**n, 300.0) for n in range(fail_count)]

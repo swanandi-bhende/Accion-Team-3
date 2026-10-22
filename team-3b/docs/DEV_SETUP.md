@@ -155,7 +155,9 @@ is the first 32 hex characters of that same public key.
   development backend does not load keys from it yet.
 - The simulated enclave has no provisioned key. `InferenceEngine` generates a
   fresh key per instance unless one is passed in (`inference/engine.py`).
-- There is no 0G storage backend. Only IPFS is implemented.
+- Storage is IPFS by default. `MODEL_STORAGE_BACKEND=0g` selects 0G Storage, which needs the
+  `0g-storage-client` binary on PATH (the container images already include it); see
+  [docs/ROADMAP.md](ROADMAP.md#outstanding-dependencies-and-risks).
 
 ### Team A addresses are read, not copied
 

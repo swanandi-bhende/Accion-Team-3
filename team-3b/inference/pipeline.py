@@ -50,7 +50,7 @@ from common.exceptions import (
 )
 from common.model_registry import ModelRegistry
 from common.models import ExecutionReceipt, InferenceRequest, VerificationRequest
-from common.storage.ipfs_backend import IPFSBackend
+from common.storage.factory import build_storage_backend
 from common.tensors import encode_tensor
 from event_listener.config import load_contract_abi
 from event_listener.listener import EventListener
@@ -591,7 +591,7 @@ def build_pipeline(settings: Settings | None = None, **overrides: Any) -> Pipeli
         "tee_mode",
     )
     redis_client = redis.from_url(settings.redis_url, decode_responses=False)
-    storage = IPFSBackend(node_url=settings.model_storage_url or "http://localhost:5001")
+    storage = build_storage_backend(settings)
     registry = ModelRegistry(redis_client, storage)
 
     tee = TEERuntime(settings.tee_mode or "")

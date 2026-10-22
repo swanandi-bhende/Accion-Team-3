@@ -18,7 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from common.exceptions import ConfigurationError
@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     # --- Storage ---
     redis_url: str | None = None
     model_storage_url: str | None = None
+    # ``ipfs`` (the Kubo node at model_storage_url) or ``0g`` (0G Storage through the CLI).
+    model_storage_backend: Literal["ipfs", "0g"] = "ipfs"
+    zerog_cli: str = "0g-storage-client"
+    zerog_rpc_endpoint: str | None = None
+    zerog_indexer_url: str = "https://indexer-storage-testnet-turbo.0g.ai"
+    zerog_private_key: SecretStr | None = None
+    # Uploads are refused, not retried, while the wallet holds less than this many 0G.
+    zerog_min_balance: float = 0.1
 
     # --- Blockchain ---
     web3_ws_url: str | None = None

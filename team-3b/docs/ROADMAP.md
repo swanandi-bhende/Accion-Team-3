@@ -52,5 +52,13 @@ the bid that settlement pays.
   bid on are recorded but unpayable (see `docs/INTEGRATION_CONTRACTS.md` §6).
 - Hardware-backed TEE attestation rather than the simulator.
 - Production zkML backend selection and proof-time budgets for real model sizes.
+- **Storage: IPFS by default, 0G Storage behind `MODEL_STORAGE_BACKEND=0g`.** The 0G
+  adapter (`common/storage/zerog_backend.py`) runs the official `0g-storage-client` CLI,
+  which builds the Merkle tree, submits the Flow transaction and uploads the segments. It is
+  tested against a stand-in CLI, and it has run once against the Galileo testnet (chain 16602):
+  a 155-byte fixture was uploaded, downloaded, and matched byte for byte. Mainnet has not been
+  used. The CLI is built into `docker/base.Dockerfile` at a pinned commit, so every service
+  image has it. A wallet short of gas is refused with `ConfigurationError` rather than retried.
+  Requirement 7 names IPFS, Filecoin and 0G as options, so IPFS stays the default.
 - A SuperLink deployment validated in staging, plus TLS, client authentication,
   and cryptographic secure aggregation for the federated track.

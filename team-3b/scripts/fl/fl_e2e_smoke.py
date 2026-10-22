@@ -9,7 +9,7 @@ Two dependencies are satisfied locally so the check needs no Docker:
 
 * **Redis** -- a private ``redis-server`` instance on an ephemeral port, so the
   developer's own Redis (6379) and its data are never touched.
-* **IPFS** -- the runner hardwires ``IPFSBackend``, so this starts an HTTP server
+* **IPFS** -- the runner uses ``IPFSBackend`` by default, so this starts an HTTP server
   implementing the two IPFS API calls the backend uses (``/api/v0/add`` and
   ``/api/v0/cat``). This exercises the real ``httpx`` path, multipart framing
   included. It is **not** a Kubo node: it verifies the API contract the backend

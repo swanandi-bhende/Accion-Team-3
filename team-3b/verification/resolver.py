@@ -11,7 +11,7 @@ class ProofResolutionError(Exception):
 class StorageProofResolver:
     """Resolve proof references from storage or from submitted transactions.
 
-    CIDs (``Qm`` or ``bafy`` prefixes) are read from ``storage``. ``0x`` transaction
+    CIDs (``Qm``, ``bafy`` or ``zg:`` prefixes) are read from ``storage``. ``0x`` transaction
     hashes are decoded only when both ``web3`` and ``contract`` are configured.
     """
 
@@ -30,7 +30,7 @@ class StorageProofResolver:
         Raises:
             ProofResolutionError: If the reference is unsupported, missing, or cannot be decoded.
         """
-        if reference.startswith("Qm") or reference.startswith("bafy"):
+        if reference.startswith(("Qm", "bafy", "zg:")):
             try:
                 content: bytes = await self.storage.retrieve(reference)
                 return content

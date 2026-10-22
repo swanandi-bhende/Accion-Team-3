@@ -19,6 +19,7 @@ The system workflow follows a strict pipeline:
 ### Integration Status
 - **Team A (Smart Contracts):** INTEGRATED. The listener and submitter run against Team A's real contracts — ABIs in `team_a_assets/`, addresses in `deployments/galileo.json`, and their deployed bytecode replayed onto the local `chain/` node by `scripts/ops/install_team_a_local.py`. Chain id 16602, the same as 0G Galileo.
 - **Team C (Agent Logic):** MOCKED. Expected agent payloads are stubbed locally pending finalized schemas from Team C.
+- **Storage:** IPFS (Kubo HTTP API) by default. `MODEL_STORAGE_BACKEND=0g` stores model binaries on 0G Storage through the official `0g-storage-client` CLI. It has been run once against the Galileo testnet (chain 16602): a 155-byte fixture was uploaded, downloaded, and matched byte for byte. Mainnet has not been used. Model uploads are queued durably and retried with 5–300 s backoff while storage is unreachable (Requirement 7.5).
 
 ### Open decision: what starts execution
 - **Company spec, Requirement 5:** the listener starts workloads on `TaskCreated` and `TaskFunded`. This is what the code does today.

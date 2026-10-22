@@ -12,7 +12,7 @@ from common.config import Settings, get_settings
 from common.exceptions import UnsupportedFormatError
 from common.interfaces import StorageBackend
 from common.models import VerificationRequest, VerificationResponse
-from common.storage.ipfs_backend import IPFSBackend
+from common.storage.factory import build_storage_backend
 from verification.interface import VerificationInterface
 from verification.resolver import StorageProofResolver
 from verification.verifiers import ConcreteTEEVerifier, ConcreteZkMLVerifier
@@ -86,5 +86,5 @@ def create_default_app(timeout_s: float = 5.0) -> FastAPI:
     ``invalid_signature``.
     """
     settings = get_settings()
-    storage = IPFSBackend(node_url=settings.model_storage_url or "http://localhost:5001")
+    storage = build_storage_backend(settings)
     return create_app(build_verification_interface(settings, storage), timeout_s=timeout_s)

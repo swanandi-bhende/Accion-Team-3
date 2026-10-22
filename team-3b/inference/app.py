@@ -21,7 +21,7 @@ from common.exceptions import (
 )
 from common.model_registry import ModelRegistry
 from common.models import ExecutionReceipt, InferenceRequest
-from common.storage.ipfs_backend import IPFSBackend
+from common.storage.factory import build_storage_backend
 from event_listener.config import load_contract_abi
 from inference.auth import (
     AuthError,
@@ -106,7 +106,7 @@ def build_app_state(app: FastAPI) -> State:
     settings = get_settings().require("redis_url", "tee_mode", "model_storage_url")
 
     redis_client = redis.Redis.from_url(settings.redis_url or "")
-    storage_backend = IPFSBackend(node_url=settings.model_storage_url or "")
+    storage_backend = build_storage_backend(settings)
     model_registry = ModelRegistry(redis_client, storage_backend)
 
     tee_runtime = TEERuntime(settings.tee_mode or "")
