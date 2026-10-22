@@ -1,0 +1,11 @@
+# EZKL, the production zkML backend (proof_generator/ezkl_backend.py). ONNX and
+# onnxruntime are in base.txt.
+#
+# The service images install this only when built with INSTALL_ZKML=true, and
+# ZKML_BACKEND=ezkl is then set at run time. ezkl==23.0.5 publishes an x86_64 wheel
+# but no linux/arm64 wheel, so on an Apple Silicon Docker host the images keep the
+# development backend. The pipeline refuses to start with ZKML_BACKEND=ezkl when
+# the package is missing.
+#
+#     pip install -r requirements/zkml.txt
+ezkl==23.0.5

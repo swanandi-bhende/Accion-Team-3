@@ -1,0 +1,14 @@
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.git
+.env
+.env.mock
+.env.example
+*.egg-info
+venv
+.venv
+docker-compose.override.yml
+# Proving keys, spike artifacts and local state. Images never need them (see docs/ZKML_SPIKE.md).
+data/

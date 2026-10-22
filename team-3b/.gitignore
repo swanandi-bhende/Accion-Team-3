@@ -1,0 +1,68 @@
+# Environment variables
+.env
+.env.*
+.env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Testing and coverage
+.coverage
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Hardhat/Node
+node_modules/
+chain/artifacts/
+chain/cache/
+chain/typechain-types/
+
+# Logs and databases
+logs/
+*.log
+data/
+!data/zkml_spike/
+data/zkml_spike/*
+!data/zkml_spike/benchmark_result.json
+*.sqlite3
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Tooling
+.freebuff/

@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1
+
+# Mounts live source so the inference engine and verification api pick up edits
+# without rebuilding the image. uvicorn --reload restarts only on Python source
+# changes; every other service still runs whatever was baked in (by default).
+
+services:
+  inference-engine:
+    build:
+      context: .
+      dockerfile: inference/Dockerfile
+    user: "0:0"
+    volumes:
+      - ./common:/app/common:ro
+      - ./inference:/app/inference:ro
+    command: ["uvicorn", "inference.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir=/app/inference", "--reload-dir=/app/common"]
+
+  verification-api:
+    build:
+      context: .
+      dockerfile: verification/Dockerfile
+    user: "0:0"
+    volumes:
+      - ./common:/app/common:ro
+      - ./proof_generator:/app/proof_generator:ro
+      - ./verification:/app/verification:ro
+    command: ["uvicorn", "verification.app:create_default_app", "--factory", "--host", "0.0.0.0", "--port", "8001", "--reload", "--reload-dir=/app/verification"]
+
+  seed-model:
+    build:
+      context: .
+      dockerfile: inference/Dockerfile
+    volumes:
+      - ./scripts:/app/scripts:ro
+    command: ["python", "-m", "scripts.ops.seed_model_registry"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      ipfs:
+        condition: service_healthy

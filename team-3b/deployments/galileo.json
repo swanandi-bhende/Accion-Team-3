@@ -1,0 +1,24 @@
+{
+  "network": "0G Galileo testnet",
+  "CHAIN_ID": 16602,
+  "TEST_TOKEN_ADDRESS": "0x22374BC6FF12FF2Bf407Da332F16Ee65D52CE0EC",
+  "BOUNTY_TOKEN_ADDRESS": "0x22374BC6FF12FF2Bf407Da332F16Ee65D52CE0EC",
+  "ESCROW_ADDRESS": "0x5B685Ca03A8072FB3f9721Dd7017Ed0D8C719217",
+  "STAKING_ADDRESS": "0x41eCc7485d2Bbc188B4F638871ca3f00D2c65C38",
+  "IDENTITY_ADDRESS": "0xC70c8865eACC340AB15Af8d4e726F438CD639Db9",
+  "TASK_MANAGER_ADDRESS": "0xA55f34e4137aD55f48aB268d4361F2225C4B5078",
+  "PROOF_SUBMITTER_CONTRACT_ADDRESS": "0xA55f34e4137aD55f48aB268d4361F2225C4B5078",
+  "SETTLEMENT_ADDRESS": "0x45D1a7AF404D2EDf5E5c23C7c0b6338227b9BC4E",
+  "ARTIFACTS_DIR": "team_a_assets",
+  "TASK_MANAGER_ARTIFACT": "TaskManager",
+  "ESCROW_ARTIFACT": "EscrowContract",
+  "PROOF_SUBMITTER_ARTIFACT": "TaskManager",
+  "PROVER": null,
+  "SOURCE": "Team A handoff (team_a_assets/team_a.txt), 2026-10-20",
+  "NOTES": [
+    "PROOF_SUBMITTER_CONTRACT_ADDRESS is TaskManager: submitProofs and the ProofSubmitted/ProofRejected events live there.",
+    "SETTLEMENT_ADDRESS is SettlementContract, which settles escrowed funds (settleTask) after the proof is recorded.",
+    "PROVER is null: the proof submitter's signer must be added with TaskManager.setProver(address, true) before submitProofs will succeed.",
+    "Team A's own export calls this file deployments/galileo.json; the key names here are the ones common/config.py adopts."
+  ]
+}

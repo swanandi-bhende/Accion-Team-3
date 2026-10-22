@@ -1,0 +1,12 @@
+fastapi==0.138.2
+uvicorn==0.49.0
+web3>=6.11.0
+redis==5.0.0
+pydantic>=2.5.0
+pydantic-settings>=2.0.0
+setuptools<70.0.0
+httpx
+cryptography>=46.0.0
+numpy>=1.26
+onnx==1.23.0
+onnxruntime==1.30.0

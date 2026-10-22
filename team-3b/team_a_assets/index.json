@@ -1,0 +1,31 @@
+{
+  "events": {
+    "EscrowContract": [
+      "TaskFunded(bytes32 indexed taskId, address indexed funder, uint256 amount)"
+    ],
+    "IdentityContract": [
+      "IdentityRegistered(address indexed wallet, bytes32 metadataHash)",
+      "IdentityUpdated(address indexed wallet, bytes32 metadataHash)"
+    ],
+    "SettlementContract": [
+      "TaskSettled(bytes32 indexed taskId, address indexed worker, uint256 workerAmount, uint256 stakerAmount, uint256 treasuryAmount)"
+    ],
+    "StakingContract": [
+      "Staked(address indexed staker, uint256 amount)",
+      "Unstaked(address indexed staker, uint256 amount)",
+      "YieldClaimed(address indexed staker, uint256 amount)"
+    ],
+    "TaskManager": [
+      "ArtifactRecorded(bytes32 indexed taskId, string contentHash, address indexed recorder)",
+      "BidAccepted(bytes32 indexed taskId, address indexed worker)",
+      "BidPlaced(bytes32 indexed taskId, address indexed bidder, uint256 price, uint64 etaSeconds, bytes32 capabilityProofHash)",
+      "ProofRejected(bytes32 indexed taskId, uint8 reason)",
+      "ProofSubmitted(bytes32 indexed taskId, bytes32 proofHash, string modelCid, bytes32 resultHash, address indexed submitter)",
+      "ProverUpdated(address indexed prover, bool allowed)",
+      "TaskCompleted(bytes32 indexed taskId)",
+      "TaskCreated(bytes32 indexed taskId, address indexed creator, bytes32 descriptionHash, uint256 deadline, uint256 bountyAmount)",
+      "TaskSettledStatus(bytes32 indexed taskId)"
+    ]
+  },
+  "deployments": {}
+}

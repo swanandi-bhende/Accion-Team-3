@@ -1,0 +1,290 @@
+# Full stack for the Verifiable AI Execution subsystem.
+#
+#   docker compose up --build -d          # build, install Team A's contracts, start
+#   scripts/ops/smoke_test_compose.sh         # verify it actually works end to end
+#
+# Nothing has to be prepared by hand: the node runs a local chain with Team A's
+# *deployed* bytecode (installed by the team-a-contracts service), and every
+# service waits for its dependencies to be *healthy* rather than merely started.
+# See docs/DEPLOYMENT.md.
+#
+# The stub contracts we wrote before Team A delivered live in
+# mocks/legacy_mock_contracts/ and are not used by anything here.
+
+services:
+  # Shared Python base image (docker/base.Dockerfile). It exits as soon as it
+  # starts; it exists so compose builds the image, and every Python service links
+  # to it through `additional_contexts: base: service:base`, which orders the builds.
+  base:
+    build:
+      context: .
+      dockerfile: docker/base.Dockerfile
+    image: accion-base:latest
+    command: ["true"]
+    restart: "no"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  ipfs:
+    image: ipfs/kubo:v0.36.0
+    ports:
+      - "5001:5001"
+      - "${IPFS_GATEWAY_PORT:-8080}:8080"
+    volumes:
+      # Kubo's repo lives at /data/ipfs; mounting anywhere else loses every
+      # pinned block when the container is recreated while Redis keeps the CIDs
+      # that point at them.
+      - ipfs_data:/data/ipfs
+    healthcheck:
+      test: ["CMD", "ipfs", "id"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  hardhat-node:
+    image: node:20-alpine
+    working_dir: /app/chain
+    volumes:
+      - .:/app
+    command: >
+      sh -c "npm install && npx hardhat node --hostname 0.0.0.0"
+    ports:
+      - "8545:8545"
+    healthcheck:
+      # The JSON-RPC endpoint answering is the real readiness signal; the first
+      # `npm install` is why the start period is generous.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8545',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',method:'eth_chainId',params:[],id:1})}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+    restart: unless-stopped
+
+  # Installs Team A's deployed bytecode on the local chain (chain/ runs it), so
+  # the listener and submitter exercise the real authorisation and lifecycle rules.
+  team-a-contracts:
+    build:
+      context: .
+      dockerfile: docker/base.Dockerfile
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+      - WEB3_RPC_URL=http://hardhat-node:8545
+    command: ["python", "-m", "scripts.ops.install_team_a_local"]
+    depends_on:
+      hardhat-node:
+        condition: service_healthy
+    restart: "no"
+
+  # One-shot init service: registers the toy models so a fresh stack can serve
+  # inference without anyone running a seed script by hand.
+  seed-model:
+    build:
+      context: .
+      dockerfile: inference/Dockerfile
+      additional_contexts:
+        base: service:base
+    command: ["python", "-m", "scripts.ops.seed_model_registry"]
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - MODEL_STORAGE_URL=http://ipfs:5001
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      redis:
+        condition: service_healthy
+      ipfs:
+        condition: service_healthy
+    restart: "no"
+
+  inference-engine:
+    build:
+      context: .
+      dockerfile: inference/Dockerfile
+      additional_contexts:
+        base: service:base
+    environment:
+      - TEE_MODE=sgx
+      - REDIS_URL=redis://redis:6379
+      - MODEL_STORAGE_URL=http://ipfs:5001
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    depends_on:
+      redis:
+        condition: service_healthy
+      ipfs:
+        condition: service_healthy
+    restart: unless-stopped
+
+  pipeline:
+    # One process runs the listener and the stages it feeds. It replaces the old
+    # standalone event-listener: two consumers of the same listener state would
+    # race on event_listener:last_block and the per-task states.
+    # Time for in-flight inference, proving and batch flushes to finish on SIGTERM.
+    stop_grace_period: 30s
+    build:
+      context: .
+      dockerfile: docker/pipeline.Dockerfile
+      additional_contexts:
+        base: service:base
+      args:
+        # ezkl has no linux/arm64 wheel: on this host the pipeline runs the development
+        # backend, which is never put on chain. Set both on a linux/amd64 host.
+        INSTALL_ZKML: ${INSTALL_ZKML:-false}
+    environment:
+      - ZKML_BACKEND=${ZKML_BACKEND:-development}
+      - TEE_MODE=sgx
+      - WEB3_RPC_URL=http://hardhat-node:8545
+      - REDIS_URL=redis://redis:6379
+      - MODEL_STORAGE_URL=http://ipfs:5001
+      # The install step owns the addresses; reading them from the deployment
+      # record is what makes the very first `up` work without recreating this
+      # container.
+      - MOCK_DEPLOYMENTS_PATH=/app/deployments/galileo.json
+    volumes:
+      # Contract ABIs are Team A's exports; the services read them at startup.
+      - ./team_a_assets:/app/team_a_assets:ro
+      - ./deployments:/app/deployments:ro
+      # Proving bundles, read-only: the pipeline only loads them.
+      - ./data/proving_keys:/app/data/proving_keys:ro
+    env_file:
+      - path: .env
+        required: false
+    healthcheck:
+      # The pipeline is a worker, not a web server: reaching its state store is liveness.
+      test: ["CMD", "python", "-c", "import os, redis; redis.Redis.from_url(os.environ['REDIS_URL']).ping()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      redis:
+        condition: service_healthy
+      ipfs:
+        condition: service_healthy
+      team-a-contracts:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  proof-submitter:
+    # Standalone submitter. Idle in this stack: the pipeline submits proofs from its own
+    # process and nothing feeds this service. Kept so it can run as a separate submitter.
+    # Time for an in-flight poll pass or proof batch to finish on SIGTERM.
+    stop_grace_period: 30s
+    build:
+      context: .
+      dockerfile: proof_submitter/Dockerfile
+      additional_contexts:
+        base: service:base
+      args:
+        # Enable only where an EZKL wheel exists for the platform.
+        INSTALL_ZKML: "false"
+    environment:
+      - WEB3_RPC_URL=http://hardhat-node:8545
+      - REDIS_URL=redis://redis:6379
+      - MOCK_DEPLOYMENTS_PATH=/app/deployments/galileo.json
+    volumes:
+      # Same ABI dependency as event-listener.
+      - ./team_a_assets:/app/team_a_assets:ro
+      - ./deployments:/app/deployments:ro
+    env_file:
+      - path: .env
+        required: false
+    healthcheck:
+      # A settlement worker needs both its queue and its chain connection.
+      test: ["CMD", "python", "-c", "import os, redis; from web3 import Web3; redis.Redis.from_url(os.environ['REDIS_URL']).ping(); assert Web3(Web3.HTTPProvider(os.environ['WEB3_RPC_URL'])).is_connected()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      redis:
+        condition: service_healthy
+      team-a-contracts:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  verification-api:
+    build:
+      context: .
+      dockerfile: verification/Dockerfile
+      additional_contexts:
+        base: service:base
+      args:
+        # EZKL has no linux/arm64 wheel. Set INSTALL_ZKML=true on a linux/amd64 host.
+        INSTALL_ZKML: ${INSTALL_ZKML:-false}
+    environment:
+      - MODEL_STORAGE_URL=http://ipfs:5001
+    volumes:
+      # Proving bundles built by scripts/zkml/build_proving_bundles.py. Read-only here:
+      # the verifier only loads them.
+      - ./data/proving_keys:/app/data/proving_keys:ro
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    depends_on:
+      ipfs:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One-shot training job: runs the configured federated-learning rounds, stores
+  # the resulting model, and exits 0. The long-lived gRPC/SuperLink entrypoint for
+  # real multi-process runs is federated_learning/network_runner.py.
+  fl-orchestrator:
+    build:
+      context: .
+      dockerfile: federated_learning/Dockerfile
+      additional_contexts:
+        base: service:base
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - MODEL_STORAGE_URL=http://ipfs:5001
+      - FL_NUM_CLIENTS=3
+      - FL_NUM_ROUNDS=3
+      - FL_MODEL_ID=fl-demo-model
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      redis:
+        condition: service_healthy
+      ipfs:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  redis_data:
+  ipfs_data:

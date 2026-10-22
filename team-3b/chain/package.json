@@ -1,0 +1,12 @@
+{
+  "name": "team-a-local-chain",
+  "version": "1.0.0",
+  "description": "Local node that runs Team A's deployed contract bytecode",
+  "scripts": {
+    "node": "hardhat node"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "hardhat": "^2.19.4"
+  }
+}
