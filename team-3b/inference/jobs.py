@@ -54,6 +54,11 @@ PENDING_SET = "jobs:pending"
 _TASK_ID = re.compile(r"^(0x)?[0-9a-fA-F]{64}$")
 _SHA256_HEX = re.compile(r"^[0-9a-fA-F]{64}$")
 
+# A job gets the inference budget (30 s, Requirement 1.1) plus the proof budget (120 s,
+# Requirement 3.5). Clients poll GET /jobs/{id} for this long, then stop.
+JOB_BUDGET_S = 30.0 + 120.0
+POLL_AFTER_S = 5
+
 
 class InvalidJobError(ValueError):
     """The job request is well formed JSON but cannot be run: its hash or input is wrong."""
@@ -127,12 +132,14 @@ class JobService:
         tee: Any,
         prover: Any,
         max_concurrent: int = 4,
+        timeout_s: float = JOB_BUDGET_S,
         clock: Callable[[], float] = time.time,
     ):
         self.redis = redis_client
         self.engine = engine
         self.tee = tee
         self.prover = prover
+        self.timeout_s = timeout_s
         self.clock = clock
         self._slots = asyncio.Semaphore(max_concurrent)
         self._tasks: set[asyncio.Task[None]] = set()
@@ -166,6 +173,7 @@ class JobService:
             "model_id": model_id,
             "created_at": now,
             "updated_at": now,
+            "deadline": now + self.timeout_s,
             "error": None,
             "receipt": None,
         }
@@ -220,12 +228,16 @@ class JobService:
             await self._save(job)
             input_data = await self.redis.get(INPUT_KEY.format(job_id))
             try:
-                receipt = await self._execute(job, input_data)
+                async with asyncio.timeout(job["deadline"] - self.clock()) as budget:
+                    receipt = await self._execute(job, input_data)
             except asyncio.CancelledError:
                 # Shutdown: leave the job unfinished so the next start runs it again.
                 raise
             except Exception as error:
-                code, detail = failure_code(error)
+                if budget.expired():
+                    code, detail = "job_timeout", f"no result within the job's {self.timeout_s:.0f} s budget"
+                else:
+                    code, detail = failure_code(error)
                 if code == "internal_error":
                     logger.exception("JOB_FAILED job_id=%s", job_id)
                 else:
@@ -272,5 +284,6 @@ def summary(job: dict[str, Any], created: bool) -> dict[str, Any]:
         "task_id": job["task_id"],
         "input_hash": job["input_hash"],
         "model_id": job["model_id"],
+        "deadline": job["deadline"],
         "created": created,
     }

@@ -19,6 +19,8 @@ from common.models import ExecutionReceipt, InferenceRequest
 from common.storage.ipfs_backend import IPFSBackend
 from inference.engine import InferenceEngine
 from inference.jobs import (
+    FINISHED_STATUSES,
+    POLL_AFTER_S,
     InvalidJobError,
     JobConflictError,
     JobCreate,
@@ -71,6 +73,7 @@ def build_app_state(app: FastAPI) -> State:
         tee_runtime,
         zkml_prover,
         max_concurrent=settings.pipeline_max_in_flight,
+        timeout_s=settings.tee_inference_timeout_s + ZkMLProver.PROOF_TIMEOUT_S,
     )
     return app.state
 
@@ -188,7 +191,8 @@ async def get_job(job_id: str, service: JobService = Depends(get_job_service)) -
     job = await service.get(job_id)
     if job is None:
         return JSONResponse(status_code=404, content={"error": "JobNotFound", "detail": job_id})
-    return JSONResponse(status_code=200, content=job)
+    headers = None if job["status"] in FINISHED_STATUSES else {"Retry-After": str(POLL_AFTER_S)}
+    return JSONResponse(status_code=200, content=job, headers=headers)
 
 @app.get("/health")
 async def health_check(request: Request) -> JSONResponse:

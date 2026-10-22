@@ -24,7 +24,7 @@ Request body:
 Responses:
 
 - `202 Accepted`, with `Location: /jobs/{job_id}`:
-  `{"job_id", "status", "task_id", "input_hash", "model_id", "created"}`.
+  `{"job_id", "status", "task_id", "input_hash", "model_id", "deadline", "created"}`.
   `created` is `false` when the job already existed.
 - `422 InvalidJob`: `input_hash` does not match `input_data`, or `input_data` is not an
   `.npy` tensor. Schema errors (bad `task_id`, bad base64) also return 422 from the schema.
@@ -36,7 +36,21 @@ Responses:
 - `404 JobNotFound`.
 
 Job fields: `job_id`, `status`, `task_id`, `input_hash`, `model_id`, `created_at`,
-`updated_at`, `error`, `receipt`.
+`updated_at`, `deadline`, `error`, `receipt`.
+
+Polling: while a job is `queued` or `running`, `GET` sends `Retry-After: 5`. Poll until the
+job is `completed` or `failed`, or until `deadline` (Unix seconds) passes. Team 3C's retry
+plan (2–60 s backoff) applies to `POST /jobs` and `GET` alike. `POST` is idempotent, so a
+retried post never starts a second job.
+
+## Timeouts
+
+A job's budget is 150 s: the inference budget of 30 s (Requirement 1.1) plus the proof budget
+of 120 s (Requirement 3.5). `deadline` is `created_at` plus that budget. It is absolute, so
+a job resumed after a restart keeps its original deadline. The 10 s proof batch window and
+transaction confirmation do not apply here, since this route does not settle on chain.
+
+A job still running at its deadline fails with `job_timeout`, and its work is cancelled.
 
 ## Lifecycle
 
@@ -45,9 +59,10 @@ Job fields: `job_id`, `status`, `task_id`, `input_hash`, `model_id`, `created_at
 - `completed`: `error` is null and `receipt` is set.
 - `failed`: `receipt` is null and `error` is `{"code", "detail"}`.
 
-Error codes: `model_not_found`, `inference_timeout`, `integrity_failure`, `tee_unavailable`,
-`model_execution_failed`, `invalid_input`, `proof_keys_missing`, `proof_inconsistent`,
-`unsupported_architecture`, `proof_failed`, `proof_timeout`, `internal_error`.
+Error codes: `model_not_found`, `inference_timeout`, `job_timeout`, `integrity_failure`,
+`tee_unavailable`, `model_execution_failed`, `invalid_input`, `proof_keys_missing`,
+`proof_inconsistent`, `unsupported_architecture`, `proof_failed`, `proof_timeout`,
+`internal_error`.
 
 ## Idempotency
 

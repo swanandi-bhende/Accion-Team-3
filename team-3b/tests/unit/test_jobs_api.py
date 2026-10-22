@@ -261,3 +261,42 @@ async def test_unfinished_jobs_are_run_again_after_a_restart(jobs: tuple[JobServ
 
     assert current["status"] == "completed", current
     assert await redis_client.get(INDEX_KEY.format(task_id, input_hash)) == job["job_id"].encode()
+
+
+@pytest.mark.asyncio
+async def test_a_job_that_outlives_its_budget_fails_as_job_timeout(
+    jobs: tuple[JobService, Any, fakeredis.FakeRedis],
+) -> None:
+    _service, engine, redis_client = jobs
+
+    async def stalled_execute(_request: Any) -> Any:
+        await asyncio.sleep(30)
+
+    engine.execute = stalled_execute  # type: ignore[method-assign]
+    app.state.job_service = JobService(redis_client, engine, _service.tee, _service.prover, timeout_s=0.3)
+    input_data = tensor_bytes(seed=21)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        accepted = (await client.post("/jobs", json=body(input_data))).json()
+        running = await client.get(f"/jobs/{accepted['job_id']}")
+        job = await wait_for_status(client, accepted["job_id"], {"failed", "completed"})
+
+    assert running.headers["retry-after"] == "5"
+    assert job["status"] == "failed"
+    assert job["error"]["code"] == "job_timeout"
+    assert job["receipt"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_post_reports_the_deadline_the_client_can_poll_until(
+    jobs: tuple[JobService, Any, fakeredis.FakeRedis],
+) -> None:
+    input_data = tensor_bytes(seed=23)
+    before = time.time()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        accepted = (await client.post("/jobs", json=body(input_data))).json()
+        job = await wait_for_status(client, accepted["job_id"], {"completed", "failed"})
+        finished = await client.get(f"/jobs/{accepted['job_id']}")
+
+    assert accepted["deadline"] >= before + 150
+    assert job["deadline"] == accepted["deadline"]
+    assert "retry-after" not in finished.headers
