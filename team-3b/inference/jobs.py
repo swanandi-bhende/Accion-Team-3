@@ -21,7 +21,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from common.exceptions import (
     IntegrityCheckFailedError,
@@ -29,6 +29,7 @@ from common.exceptions import (
     ModelNotFoundError,
     ProofGenerationError,
     ProofInconsistentError,
+    ProofNotSubmittableError,
     ProvingKeysUnavailableError,
     TEEUnavailableError,
     TimeoutExceededError,
@@ -36,6 +37,7 @@ from common.exceptions import (
 )
 from common.models import InferenceRequest
 from common.tensors import decode_tensor
+from inference.auth import Authorization
 from verification.verifiers import serialize_attestation, serialize_proof_artifact
 
 logger = logging.getLogger(__name__)
@@ -72,9 +74,17 @@ class JobCreate(BaseModel):
     """Body of POST /jobs."""
 
     task_id: str = Field(description="Team A task id: bytes32 hex, with or without 0x")
-    model_id: str = Field(min_length=1, description="Model Registry id to run")
+    model_id: str | None = Field(default=None, min_length=1, description="Model Registry id to run")
+    model_cid: str | None = Field(default=None, min_length=1, description="CID of the model's current version")
     input_hash: str = Field(description="SHA-256 hex of the raw input bytes")
     input_data: bytes = Field(description="Base64 of the .npy input tensor")
+    authorization: Authorization = Field(description="Signed challenge from POST /challenges")
+
+    @model_validator(mode="after")
+    def _exactly_one_model(self) -> "JobCreate":
+        if (self.model_id is None) == (self.model_cid is None):
+            raise ValueError("give exactly one of model_id or model_cid")
+        return self
 
     @field_validator("task_id")
     @classmethod
@@ -133,12 +143,14 @@ class JobService:
         prover: Any,
         max_concurrent: int = 4,
         timeout_s: float = JOB_BUDGET_S,
+        submitter: Any = None,
         clock: Callable[[], float] = time.time,
     ):
         self.redis = redis_client
         self.engine = engine
         self.tee = tee
         self.prover = prover
+        self.submitter = submitter
         self.timeout_s = timeout_s
         self.clock = clock
         self._slots = asyncio.Semaphore(max_concurrent)
@@ -259,11 +271,33 @@ class JobService:
         execution = await self.engine.execute(request)
         attestation = self.tee.generate_attestation(input_data, execution.output)
         proof = await self.prover.generate_proof(execution, input_data)
+        settlement = await self._settle(job["task_id"], attestation, proof, execution.model_cid)
         return {
             "execution": execution.model_dump(mode="json"),
             "attestation": json.loads(serialize_attestation(attestation, self.tee.enclave.public_key_bytes)),
             "zkml_proof": json.loads(serialize_proof_artifact(proof)),
+            "settlement": settlement,
         }
+
+    async def _settle(self, task_id: str, attestation: Any, proof: Any, model_cid: str) -> dict[str, Any]:
+        """Submit the proof and the model CID on chain. A failure is recorded, not raised.
+
+        The receipt is valid without settlement, so a refused or failed submission leaves the
+        job completed, with the reason in ``settlement``.
+        """
+        if self.submitter is None:
+            return {"status": "disabled"}
+        try:
+            await self.submitter.submit_proof(task_id, attestation, proof, model_cid)
+            tx_hash = await self.submitter.flush()
+        except ProofNotSubmittableError as error:
+            return {"status": "not_submitted", "reason": str(error)}
+        except Exception as error:
+            logger.warning("JOB_SETTLEMENT_FAILED task_id=%s error=%s", task_id, error)
+            return {"status": "failed", "reason": f"{type(error).__name__}: {error}"}
+        if tx_hash is None:
+            return {"status": "dead_lettered"}
+        return {"status": "submitted", "tx_hash": tx_hash}
 
     async def _save(self, job: dict[str, Any]) -> None:
         await self.redis.set(JOB_KEY.format(job["job_id"]), json.dumps(job))

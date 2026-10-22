@@ -1,12 +1,15 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import redis.asyncio as redis
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.datastructures import State
+from web3 import Web3
 
-from common.config import get_settings
+from common.config import Settings, get_settings
 from common.exceptions import (
     IntegrityCheckFailedError,
     ModelExecutionError,
@@ -17,6 +20,8 @@ from common.exceptions import (
 from common.model_registry import ModelRegistry
 from common.models import ExecutionReceipt, InferenceRequest
 from common.storage.ipfs_backend import IPFSBackend
+from event_listener.config import load_contract_abi
+from inference.auth import AuthError, ChallengeRequest, Challenges, TaskWorkerLookup
 from inference.engine import InferenceEngine
 from inference.jobs import (
     FINISHED_STATUSES,
@@ -29,6 +34,57 @@ from inference.jobs import (
 )
 from inference.tee_runtime import TEERuntime
 from proof_generator.zkml_prover import ZkMLProver
+from proof_submitter.submitter import ProofSubmitter
+
+
+def build_task_manager(settings: Settings) -> tuple[Web3, Any] | None:
+    """Team A's TaskManager on the configured chain, or None when no chain is configured.
+
+    The chain is not contacted here. Inference does not need it, so an unreachable RPC must
+    not stop the service from starting.
+    """
+    if not (settings.web3_rpc_url and settings.task_manager_address):
+        return None
+    web3 = Web3(Web3.HTTPProvider(settings.web3_rpc_url))
+    contract = web3.eth.contract(
+        address=web3.to_checksum_address(settings.task_manager_address),
+        abi=load_contract_abi(settings.task_manager_artifact),
+    )
+    return web3, contract
+
+
+def build_settlement(settings: Settings, redis_client: redis.Redis) -> ProofSubmitter | None:
+    """The proof submitter for job receipts, or None when no signing key or chain is configured.
+
+    A wrong chain surfaces as a failed settlement, not as a failed job.
+    """
+    key = settings.proof_submitter_private_key
+    chain = build_task_manager(settings)
+    if chain is None or not key or int(key, 16) == 0:
+        return None
+    web3, task_manager = chain
+    return ProofSubmitter(
+        web3,
+        task_manager,
+        redis_client,
+        private_key=key,
+        batch_window=settings.proof_batch_window_s,
+        allow_development_backend=settings.proof_allow_development_backend,
+    )
+
+
+def build_task_worker_lookup(settings: Settings) -> TaskWorkerLookup | None:
+    """Reads ``taskWorker(task_id)`` from Team A's TaskManager, or None when no chain is configured."""
+    chain = build_task_manager(settings)
+    if chain is None:
+        return None
+    _, task_manager = chain
+
+    async def lookup(task_id: str) -> str | None:
+        worker: str = await asyncio.to_thread(task_manager.functions.taskWorker(bytes.fromhex(task_id.removeprefix("0x"))).call)
+        return worker
+
+    return lookup
 
 
 def build_app_state(app: FastAPI) -> State:
@@ -67,6 +123,7 @@ def build_app_state(app: FastAPI) -> State:
     app.state.tee_runtime = tee_runtime
     app.state.inference_engine = inference_engine
     app.state.zkml_prover = zkml_prover
+    app.state.challenges = Challenges(redis_client, build_task_worker_lookup(settings))
     app.state.job_service = JobService(
         redis_client,
         inference_engine,
@@ -74,6 +131,7 @@ def build_app_state(app: FastAPI) -> State:
         zkml_prover,
         max_concurrent=settings.pipeline_max_in_flight,
         timeout_s=settings.tee_inference_timeout_s + ZkMLProver.PROOF_TIMEOUT_S,
+        submitter=build_settlement(settings, redis_client),
     )
     return app.state
 
@@ -162,15 +220,38 @@ def get_job_service(request: Request) -> JobService:
         build_app_state(request.app)
     return get_job_service_from_state(request.app.state)
 
+def get_challenges(request: Request) -> Challenges:
+    """FastAPI dependency that returns the challenge issuer, building app state if needed."""
+    if not hasattr(request.app.state, "inference_engine"):
+        build_app_state(request.app)
+    challenges: Challenges = request.app.state.challenges
+    return challenges
+
+@app.post("/challenges", status_code=201)
+async def create_challenge(body: ChallengeRequest, challenges: Challenges = Depends(get_challenges)) -> dict[str, Any]:
+    """Issue a single-use challenge for a (task, wallet). Sign its ``message`` and send it with the job."""
+    return await challenges.issue(body.task_id, body.wallet_address)
+
 @app.post("/jobs", status_code=202)
-async def create_job(body: JobCreate, service: JobService = Depends(get_job_service)) -> JSONResponse:
+async def create_job(body: JobCreate, request: Request, service: JobService = Depends(get_job_service)) -> JSONResponse:
     """Accept an inference job and return 202 at once. Poll GET /jobs/{job_id} for the result.
 
-    Posting the same (task_id, input_hash) again returns the same job. The same key for a
-    different model is a 409.
+    The request must carry a signed challenge from the task's worker (see POST /challenges).
+    The model is named by registry id or by the CID of its current version. Posting the same
+    (task_id, input_hash) again returns the same job. The same key for a different model is a 409.
     """
     try:
-        job, created = await service.submit(body.task_id, body.input_hash, body.model_id, body.input_data)
+        await get_challenges(request).verify(body.task_id, body.authorization)
+    except AuthError as error:
+        return JSONResponse(status_code=error.status_code, content={"error": error.code, "detail": error.detail})
+    model_id = body.model_id
+    if model_id is None:
+        entry = await request.app.state.model_registry.get_by_cid(body.model_cid or "")
+        if entry is None:
+            return JSONResponse(status_code=404, content={"error": "ModelNotFound", "detail": f"no current model at CID {body.model_cid}"})
+        model_id = entry.model_id
+    try:
+        job, created = await service.submit(body.task_id, body.input_hash, model_id, body.input_data)
     except InvalidJobError as error:
         return JSONResponse(status_code=422, content={"error": "InvalidJob", "detail": str(error)})
     except JobConflictError as error:

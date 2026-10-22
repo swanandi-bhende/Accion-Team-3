@@ -86,6 +86,20 @@ class ModelRegistry:
             architecture=decoded.get("architecture"),
         )
 
+    async def get_by_cid(self, cid: str) -> ModelEntry | None:
+        """Resolve the model whose current version is stored at ``cid``.
+
+        A CID that was once a version but has since been replaced by a newer one does not
+        resolve, so a client cannot run an old artifact by naming its CID.
+        """
+        model_id = await self.redis.get(f"model:cid:{cid}")
+        if not model_id:
+            return None
+        entry = await self.get(model_id.decode() if isinstance(model_id, bytes) else model_id)
+        if entry is None or entry.cid != cid:
+            return None
+        return entry
+
     async def _next_version(self, model_id: str) -> int:
         """Atomic counter for the next version using Redis INCR."""
         counter_key = f"model:{model_id}:version_counter"
@@ -140,6 +154,7 @@ class ModelRegistry:
             metadata["architecture"] = architecture
         pipeline.hset(key, mapping=metadata)
         pipeline.set(latest_key, key)
+        pipeline.set(f"model:cid:{cid}", model_id)
         await pipeline.execute()
 
     async def upload_model(

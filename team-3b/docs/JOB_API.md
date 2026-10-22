@@ -17,17 +17,44 @@ Request body:
 | Field | Type | Notes |
 | --- | --- | --- |
 | `task_id` | string | Team A task id: 32-byte hex, with or without `0x` |
-| `model_id` | string | Model Registry id to run |
+| `model_id` | string | Model Registry id to run. Give this or `model_cid`, not both |
+| `model_cid` | string | CID of the model's current version. Give this or `model_id`, not both |
 | `input_hash` | string | SHA-256 hex of the raw input bytes |
 | `input_data` | string | Base64 of the `.npy` input tensor |
+| `authorization` | object | `{wallet_address, nonce, expires_at, signature}`, from the challenge below |
+
+Authorization. A job is accepted only from the worker Team A's `TaskManager` records for the
+task:
+
+1. `POST /challenges` with `{"task_id", "wallet_address"}`. It returns `{nonce, expires_at,
+   message}` (status 201). The nonce lives 120 s, and the message names the task, the wallet,
+   the nonce and the expiry.
+2. The wallet signs `message` with EIP-191 `personal_sign`, and sends `signature` in
+   `authorization`, with the same `nonce` and `expires_at`.
+3. The service consumes the nonce, so each challenge gives one attempt. It checks that the
+   nonce is live, that the signature recovers to the wallet, and that `taskWorker(task_id)` is
+   that wallet.
+
+Authorization errors:
+
+- `401 challenge_unknown`: the nonce is unknown, expired, or already used.
+- `401 challenge_mismatch`: the authorization does not match its challenge's task or wallet.
+- `401 challenge_expired`: `expires_at` has passed.
+- `401 bad_signature`: the signature is malformed, or it does not recover to the wallet.
+- `403 not_task_worker`: the wallet is not the task's recorded worker.
+- `503 auth_unavailable`: no chain is configured, so the worker cannot be checked. The service
+  refuses jobs rather than accept them unchecked.
 
 Responses:
 
 - `202 Accepted`, with `Location: /jobs/{job_id}`:
   `{"job_id", "status", "task_id", "input_hash", "model_id", "deadline", "created"}`.
   `created` is `false` when the job already existed.
+- `404 ModelNotFound`: no model's current version is stored at `model_cid`. A CID that was
+  replaced by a newer version of its model does not resolve.
 - `422 InvalidJob`: `input_hash` does not match `input_data`, or `input_data` is not an
-  `.npy` tensor. Schema errors (bad `task_id`, bad base64) also return 422 from the schema.
+  `.npy` tensor. Schema errors (bad `task_id`, bad base64, both or neither model field)
+  also return 422 from the schema.
 - `409 JobConflict`: the same `(task_id, input_hash)` was posted for a different `model_id`.
 
 ### `GET /jobs/{job_id}`
@@ -78,12 +105,26 @@ create one job.
   "attestation": { "report": { "enclave_measurement", "signer_identity", "input_hash", "output_hash", "hardware_signature", "timestamp" },
                    "signer_public_key": "<base64>" },
   "zkml_proof": { "proof_bytes": "<base64>", "public_inputs": { "input_hash", "output_hash", "model_hash", "architecture" },
-                  "verification_key_ref", "backend" }
+                  "verification_key_ref", "backend" },
+  "settlement": { "status": "submitted", "tx_hash" } | { "status": "not_submitted", "reason" }
+                | { "status": "dead_lettered" } | { "status": "failed", "reason" } | { "status": "disabled" }
 }
 ```
 
 `output` is base64 of the `.npy` output tensor. The attestation and the proof use the wire
 formats of `POST /verify`, so a receipt can be checked with the verification API.
+
+Settlement submits the proof and the model CID to Team A's `TaskManager.submitProofs`, and
+`tx_hash` is the transaction. The job completes whatever the settlement outcome, since the
+receipt is valid without it:
+
+- `not_submitted`: the proof's backend is not allowed on chain. This is the case for the
+  development backend, which is the default.
+- `dead_lettered`: the batch failed its retries and went to the dead-letter queue.
+- `failed`: the submission raised. The `reason` says why.
+- `disabled`: no signing key or chain is configured for this service.
+
+The chain is not contacted at start-up, so an unreachable RPC does not stop the service.
 
 ## Durability
 
@@ -96,10 +137,13 @@ are, since each run produces a new execution.
 
 These are agreed in principle with Team 3C but not built:
 
-- **Authentication.** Wallet-signed challenge-response. The routes are open today.
-- **Trigger.** Execution should start on Team A's `BidAccepted` event, with the worker taken
-  from `taskWorker(task_id)`. Today jobs are created only by `POST /jobs`.
-- **Model mapping.** `model_id` is a registry id. Team 3C's payload carries a model CID, and
-  the lookup from CID to registry entry is not built.
-- **Input transport.** The input comes inline as base64. Fetching it by CID is not built.
-- **Settlement.** Receipts are not submitted on chain from this route.
+- **Reading receipts.** `GET /jobs/{job_id}` is still open. The job id is an unguessable
+  UUID, but anyone holding it can read the receipt. Gating reads on the worker's wallet is an
+  open decision for Team 3C and the company.
+- **Trigger.** Company spec Requirement 5 starts workloads on `TaskCreated` and `TaskFunded`,
+  which is what the listener does. Team 3C proposes `BidAccepted` instead. The two conflict,
+  so this is for the company and Team 3C to decide. Jobs here come only from `POST /jobs`.
+- **Input transport.** The input comes inline as base64. Fetching it by CID is out of the
+  spec's scope, so it is not planned.
+- **On-chain settlement on this Mac.** It needs the EZKL backend, and ezkl has no arm64 wheel,
+  so a job here always reports `not_submitted`. Settlement is built and tested with a stand-in.
