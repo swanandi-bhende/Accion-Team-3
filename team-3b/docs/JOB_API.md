@@ -4,7 +4,9 @@ Asynchronous inference jobs for Team 3C's execution adapter. A job runs inferenc
 attestation and the zkML proof for one input, and keeps the result as a receipt.
 
 `POST /inference` is still there. It returns only the execution receipt, with no attestation
-and no proof, so use the job API for work that needs a verifiable result.
+and no proof, so use the job API for work that needs a verifiable result. It takes the same
+signed challenge as `POST /jobs` (see Authorization below), names its model by id or by CID,
+and refuses a CID that is not the current version of a registered model before it runs.
 
 ## Endpoints
 
@@ -87,8 +89,8 @@ retried post never starts a second job.
 
 A job's budget is 150 s: the inference budget of 30 s (Requirement 1.1) plus the proof budget
 of 120 s (Requirement 3.5). `deadline` is `created_at` plus that budget. It is absolute, so
-a job resumed after a restart keeps its original deadline. The 10 s proof batch window and
-transaction confirmation do not apply here, since this route does not settle on chain.
+a job resumed after a restart keeps its original deadline. Settlement is outside this budget: it
+runs after the receipt is delivered, with its own 300 s limit (see Receipt).
 
 A job still running at its deadline fails with `job_timeout`, and its work is cancelled.
 
@@ -127,17 +129,21 @@ create one job.
 `output` is base64 of the `.npy` output tensor. The attestation and the proof use the wire
 formats of `POST /verify`, so a receipt can be checked with the verification API.
 
-Settlement submits the proof and the model CID to Team A's `TaskManager.submitProofs`, and
-`tx_hash` is the transaction. The job completes whatever the settlement outcome, since the
-receipt is valid without it:
+Delivery and settlement are separate. The job becomes `completed` as soon as the receipt exists,
+with `settlement` set to `pending`. Settlement then submits the proof and the model CID to Team
+A's `TaskManager.submitProofs`, and the job records the outcome once it is known. Poll until
+`settlement.status` is no longer `pending`:
 
+- `submitted`: `tx_hash` is the transaction that carries the proof.
 - `not_submitted`: the proof's backend is not allowed on chain. This is the case for the
   development backend, which is the default.
 - `dead_lettered`: the batch failed its retries and went to the dead-letter queue.
-- `failed`: the submission raised. The `reason` says why.
-- `disabled`: no signing key or chain is configured for this service.
+- `failed`: the submission raised, or it ran past its 300 s settlement budget. The `reason`
+  says why. The job stays `completed`.
+- `disabled`: no signing key or chain is configured. Settlement never starts.
 
-The chain is not contacted at start-up, so an unreachable RPC does not stop the service.
+Settlement works from the stored receipt, so a restart finishes a pending settlement. The chain
+is not contacted at start-up, so an unreachable RPC does not stop the service.
 
 ## Durability
 

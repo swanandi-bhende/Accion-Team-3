@@ -123,6 +123,13 @@ services:
       - TEE_MODE=sgx
       - REDIS_URL=redis://redis:6379
       - MODEL_STORAGE_URL=http://ipfs:5001
+      # POST /inference checks the caller's signed challenge against Team A's taskWorker,
+      # so the service needs the chain and the deployed TaskManager address.
+      - WEB3_RPC_URL=http://hardhat-node:8545
+      - MOCK_DEPLOYMENTS_PATH=/app/deployments/galileo.json
+    volumes:
+      - ./team_a_assets:/app/team_a_assets:ro
+      - ./deployments:/app/deployments:ro
     env_file:
       - path: .env
         required: false
@@ -139,6 +146,10 @@ services:
         condition: service_healthy
       ipfs:
         condition: service_healthy
+      hardhat-node:
+        condition: service_healthy
+      team-a-contracts:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   pipeline:

@@ -137,15 +137,57 @@ check_chain() {
     done
 }
 
-# 4. The seeded model serves inference through the containerised engine
+# 4. POST /inference is gated. An unsigned call is refused, and a signed call from a wallet that
+#    is not the task's worker is refused by the chain lookup. A signed run of the seeded model
+#    needs a task with a worker on chain, which this stack does not create.
 check_inference() {
-    local response
-    response=$(curl -fsS --max-time 30 -X POST "$INFERENCE_URL/inference" \
+    local status response
+    status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X POST "$INFERENCE_URL/inference" \
         -H 'content-type: application/json' \
-        -d '{"model_id":"toy_linear","input_data":"k05VTVBZAQB2AHsnZGVzY3InOiAnPGY0JywgJ2ZvcnRyYW5fb3JkZXInOiBGYWxzZSwgJ3NoYXBlJzogKDEsIDQpLCB9ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAoAAAAAAAAAAAAAAAAAAAAA"}') \
-        || fail "inference-engine" "POST /inference for seeded model toy_linear failed"
-    printf '%s' "$response" | grep -q '"output_hash"' || fail "inference-engine" "receipt has no output_hash"
-    ok "inference-engine" "model=toy_linear inference=receipt"
+        -d '{"task_id":"0x0000000000000000000000000000000000000000000000000000000000000001","model_id":"toy_linear","input_data":"AAAA"}') \
+        || fail "inference-engine" "POST /inference unreachable"
+    [[ "$status" == "422" ]] || fail "inference-engine" "unsigned POST /inference returned $status, expected 422"
+    response=$(docker compose exec -T pipeline python - <<'PY'
+import base64
+import json
+import urllib.error
+import urllib.request
+
+from eth_account import Account
+from eth_account.messages import encode_defunct
+
+BASE = "http://inference-engine:8000"
+TASK = "0x" + "00" * 31 + "01"
+
+
+def post(path, body):
+    request = urllib.request.Request(BASE + path, data=json.dumps(body).encode(), headers={"content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        return error.code, json.loads(error.read())
+
+
+account = Account.create()
+_, challenge = post("/challenges", {"task_id": TASK, "wallet_address": account.address})
+signature = account.sign_message(encode_defunct(text=challenge["message"])).signature
+status, body = post("/inference", {
+    "task_id": TASK,
+    "model_id": "toy_linear",
+    "input_data": base64.b64encode(b"x").decode(),
+    "authorization": {
+        "wallet_address": account.address,
+        "nonce": challenge["nonce"],
+        "expires_at": challenge["expires_at"],
+        "signature": "0x" + bytes(signature).hex(),
+    },
+})
+print(f"{status} {body.get('error')}")
+PY
+    ) || fail "inference-engine" "signed POST /inference from a non-worker could not run"
+    [[ "$response" == "403 not_task_worker" ]] || fail "inference-engine" "signed call from a non-worker returned '$response', expected 403 not_task_worker"
+    ok "inference-engine" "POST /inference gated: unsigned=422, non-worker=403 not_task_worker"
 }
 
 # 5. A new task on Team A's contracts is dispatched by the running listener.

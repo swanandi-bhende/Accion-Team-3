@@ -1,4 +1,5 @@
 import asyncio
+import base64
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -6,6 +7,7 @@ from typing import Any
 import redis.asyncio as redis
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.datastructures import State
 from web3 import Web3
 
@@ -212,13 +214,59 @@ async def model_execution_handler(request: Request, exc: ModelExecutionError) ->
     return JSONResponse(status_code=422, content={"error": "ModelExecutionFailed", "detail": str(exc)})
 
 # Endpoints
-@app.post("/inference", response_model=ExecutionReceipt)
-async def execute_inference(request: InferenceRequest, engine: InferenceEngine = Depends(get_inference_engine)) -> ExecutionReceipt:
-    """Run one inference request and return its ExecutionReceipt.
+class InferenceCall(BaseModel):
+    """Body of POST /inference: one model run, authorized by the task's worker.
 
-    Domain errors are turned into HTTP responses by the exception handlers above.
+    The model is named by registry id or by the CID of its current version, as POST /jobs does.
     """
-    return await engine.execute(request)
+
+    task_id: str = Field(pattern=r"^(0x)?[0-9a-fA-F]{64}$")
+    model_id: str | None = Field(default=None, min_length=1)
+    model_cid: str | None = Field(default=None, min_length=1)
+    input_data: bytes = Field(description="Base64 of the .npy input tensor")
+    authorization: Authorization = Field(description="Signed challenge from POST /challenges")
+
+    @model_validator(mode="after")
+    def _exactly_one_model(self) -> "InferenceCall":
+        if (self.model_id is None) == (self.model_cid is None):
+            raise ValueError("give exactly one of model_id or model_cid")
+        return self
+
+    @field_validator("input_data", mode="before")
+    @classmethod
+    def _decode_base64(cls, value: object) -> object:
+        if isinstance(value, str):
+            try:
+                return base64.b64decode(value, validate=True)
+            except ValueError as error:
+                raise ValueError("input_data must be base64") from error
+        return value
+
+
+async def resolve_model_id(request: Request, model_id: str | None, model_cid: str | None) -> str | None:
+    """Return the registry id a request names, or None when no current model is stored at its CID."""
+    if model_id is not None:
+        return model_id
+    entry = await request.app.state.model_registry.get_by_cid(model_cid or "")
+    return str(entry.model_id) if entry is not None else None
+
+
+@app.post("/inference", response_model=ExecutionReceipt)
+async def execute_inference(request: Request, body: InferenceCall, engine: InferenceEngine = Depends(get_inference_engine)) -> ExecutionReceipt | JSONResponse:
+    """Run one inference and return its ExecutionReceipt.
+
+    The request must carry a signed challenge from the task's worker (see POST /challenges).
+    It is checked before the model is looked up, so a caller without authorization learns nothing
+    about which models exist. Domain errors are turned into HTTP responses by the exception handlers above.
+    """
+    try:
+        await get_challenges(request).verify(body.task_id, body.authorization)
+    except AuthError as error:
+        return JSONResponse(status_code=error.status_code, content={"error": error.code, "detail": error.detail})
+    model_id = await resolve_model_id(request, body.model_id, body.model_cid)
+    if model_id is None:
+        return JSONResponse(status_code=404, content={"error": "ModelNotFound", "detail": f"no current model at CID {body.model_cid}"})
+    return await engine.execute(InferenceRequest(model_id=model_id, input_data=body.input_data, task_id=body.task_id))
 
 def get_job_service(request: Request) -> JobService:
     """FastAPI dependency that returns the shared job service, building app state if needed."""
@@ -250,12 +298,9 @@ async def create_job(body: JobCreate, request: Request, service: JobService = De
         await get_challenges(request).verify(body.task_id, body.authorization)
     except AuthError as error:
         return JSONResponse(status_code=error.status_code, content={"error": error.code, "detail": error.detail})
-    model_id = body.model_id
+    model_id = await resolve_model_id(request, body.model_id, body.model_cid)
     if model_id is None:
-        entry = await request.app.state.model_registry.get_by_cid(body.model_cid or "")
-        if entry is None:
-            return JSONResponse(status_code=404, content={"error": "ModelNotFound", "detail": f"no current model at CID {body.model_cid}"})
-        model_id = entry.model_id
+        return JSONResponse(status_code=404, content={"error": "ModelNotFound", "detail": f"no current model at CID {body.model_cid}"})
     try:
         job, created = await service.submit(body.task_id, body.input_hash, model_id, body.input_data)
     except InvalidJobError as error:

@@ -233,7 +233,7 @@ that shape is registered and tested.
 3. **Model mapping**: which `model_id` values they will request, how each maps to a Model Registry entry, and each model's architecture (`linear`, `cnn`, `mlp`, `transformer_small`). *Required.*
 4. **Task creation path**: whether their agent calls `TaskManager.createTask` directly, and whether it signs anything. *Required.*
 5. **`descriptionHash` derivation**: what it hashes, so the on-chain `descriptionHash` can be mapped to a `model_id`. *Required.*
-6. **Authentication**: how their agent authenticates to `POST /inference`. The service currently has none.
+6. **Authentication**: `POST /inference` now requires a signed challenge from the task's worker, as `POST /jobs` does (`docs/JOB_API.md`). Confirm their agent can sign with that wallet.
 7. **Real sample traffic**: three to five real request payloads with their expected responses, and the error cases they handle.
 8. **Results access**: what their frontend queries to show results (an endpoint, on-chain events, or a shared store). The service does not expose a results API yet.
 9. **Staging**: their staging URL, availability window, and who triggers the cross-team test.

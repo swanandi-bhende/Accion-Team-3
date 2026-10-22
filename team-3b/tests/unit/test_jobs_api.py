@@ -93,6 +93,19 @@ async def wait_for_status(client: AsyncClient, job_id: str, statuses: set[str], 
         await asyncio.sleep(0.05)
 
 
+async def wait_settled(client: AsyncClient, job_id: str, timeout: float = 20.0) -> dict[str, Any]:
+    """Wait until the job failed, or completed with its settlement recorded (not pending)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        job = (await client.get(f"/jobs/{job_id}", headers=await read_headers())).json()
+        receipt = job.get("receipt")
+        if job.get("status") == "failed" or (receipt and receipt["settlement"]["status"] != "pending"):
+            return job
+        if time.monotonic() > deadline:
+            raise AssertionError(f"job did not settle: {job}")
+        await asyncio.sleep(0.05)
+
+
 @pytest_asyncio.fixture
 async def jobs(tmp_path: Path) -> AsyncIterator[tuple[JobService, Any, fakeredis.FakeRedis]]:
     redis_client = fakeredis.FakeRedis(decode_responses=False)
@@ -422,7 +435,7 @@ async def run_one_job(service: JobService, seed: int) -> dict[str, Any]:
     input_data = tensor_bytes(seed=seed)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         accepted = (await client.post("/jobs", json=await signed_body(input_data))).json()
-        return await wait_for_status(client, accepted["job_id"], {"completed", "failed"})
+        return await wait_settled(client, accepted["job_id"])
 
 
 @pytest.mark.asyncio
@@ -640,3 +653,72 @@ async def test_an_unreachable_chain_refuses_the_job_with_503_not_a_crash(
 
     assert response.status_code == 503
     assert response.json()["error"] == "auth_unavailable"
+
+
+class GatedSubmitter(FakeSubmitter):
+    """A submitter whose transaction waits until the test releases it."""
+
+    def __init__(self) -> None:
+        super().__init__(tx_hash="0xgated")
+        self.release = asyncio.Event()
+
+    async def flush(self) -> str | None:
+        await self.release.wait()
+        return self.tx_hash
+
+
+@pytest.mark.asyncio
+async def test_the_receipt_is_delivered_before_its_settlement_finishes(
+    jobs: tuple[JobService, Any, fakeredis.FakeRedis],
+) -> None:
+    service, engine, redis_client = jobs
+    submitter = GatedSubmitter()
+    app.state.job_service = JobService(redis_client, engine, service.tee, service.prover, submitter=submitter)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        accepted = (await client.post("/jobs", json=await signed_body(tensor_bytes(seed=65)))).json()
+        delivered = await wait_for_status(client, accepted["job_id"], {"completed", "failed"})
+        assert delivered["receipt"]["settlement"] == {"status": "pending"}
+        assert delivered["receipt"]["zkml_proof"]["backend"] == "development-commitment"
+        submitter.release.set()
+        settled = await wait_settled(client, accepted["job_id"])
+
+    assert settled["receipt"]["settlement"] == {"status": "submitted", "tx_hash": "0xgated"}
+
+
+@pytest.mark.asyncio
+async def test_a_pending_settlement_is_finished_after_a_restart(jobs: tuple[JobService, Any, fakeredis.FakeRedis]) -> None:
+    service, engine, redis_client = jobs
+    first = JobService(redis_client, engine, service.tee, service.prover, submitter=GatedSubmitter())
+    app.state.job_service = first
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        accepted = (await client.post("/jobs", json=await signed_body(tensor_bytes(seed=67)))).json()
+        await wait_for_status(client, accepted["job_id"], {"completed", "failed"})
+    await first.shutdown()
+
+    later = FakeSubmitter(tx_hash="0xresumed")
+    restarted = JobService(redis_client, engine, service.tee, service.prover, submitter=later)
+    app.state.job_service = restarted
+    await restarted.resume()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        settled = await wait_settled(client, accepted["job_id"])
+    await restarted.shutdown()
+
+    assert settled["receipt"]["settlement"] == {"status": "submitted", "tx_hash": "0xresumed"}
+    assert later.submitted == [(TASK_ID, settled["receipt"]["execution"]["model_cid"])]
+
+
+@pytest.mark.asyncio
+async def test_a_settlement_that_hangs_is_recorded_as_failed_and_the_job_stays_completed(
+    jobs: tuple[JobService, Any, fakeredis.FakeRedis],
+) -> None:
+    service, engine, redis_client = jobs
+    app.state.job_service = JobService(
+        redis_client, engine, service.tee, service.prover, submitter=GatedSubmitter(), settlement_timeout_s=0.2
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        accepted = (await client.post("/jobs", json=await signed_body(tensor_bytes(seed=69)))).json()
+        settled = await wait_settled(client, accepted["job_id"])
+
+    assert settled["status"] == "completed"
+    assert settled["receipt"]["settlement"]["status"] == "failed"
+    assert "exceeded" in settled["receipt"]["settlement"]["reason"]

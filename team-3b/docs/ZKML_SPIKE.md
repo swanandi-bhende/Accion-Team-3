@@ -77,9 +77,12 @@ and logs for weight leakage.
 
 ## Proof size: spec and toolchain disagree
 
-**Decision: option A, a bounded size of at most 64 KiB, and it is final for the
-implementation.** The design document still says "~256 bytes", so its wording needs
-amending, which is a documentation change for the spec owner. It does not block the code.
+**Status: proposed, not ratified.** Option A, a bound of at most 64 KiB, is engineering's
+proposal. The spec owner has not accepted it. As written, it does not meet Property 7,
+which requires `proof_bytes` to be constant regardless of model size. The binding
+requirement is Property 7 (validates 3.6). Requirement 3.2 is about verification time,
+not proof bytes. The "~256 bytes" figure appears only in the design section. The full
+analysis and the questions for the spec owner are in `docs/PROOF_SIZE_DECISION.md`.
 
 The design document describes the zkML proof as "constant-size ~256 bytes", and
 Property 7 requires the proof size to be constant regardless of model size. The
@@ -104,16 +107,17 @@ Why both cannot hold:
 
 Options:
 
-- **A. Amend the target to a bound.** Constant for a given circuit and at most 64 KB,
-  and keep EZKL. The chain stores only a hash of the proof (`proof_hash` in
+- **A. Amend Property 7 to a bound.** Constant for a given architecture and at most 64 KiB,
+  and keep EZKL. This changes the spec. The measured sizes already differ by architecture. The chain stores only a hash of the proof (`proof_hash` in
   `submitProofs`), so the chain cost does not change. The 17–43 KB cost falls on
   storage and on the verifier's transfer.
 - **B. Keep about 256 bytes.** Wrap the EZKL proof in a recursive or Groth16 proof.
   This is a new toolchain step, and no path has been measured.
 - **C. Keep the target and record a written deviation.**
 
-Decision: A. EZKL is still provisional, and the 256-byte figure is not supported by any
-measured path. The bound of 64 KiB leaves room for the larger spike artifacts.
+Recommendation: C until the spec owner decides, then A if they amend Property 7. EZKL is
+still provisional. The 256-byte figure is not supported by any measured path. The 64 KiB
+bound has been checked only on the four tiny fixtures.
 
 What the code enforces:
 

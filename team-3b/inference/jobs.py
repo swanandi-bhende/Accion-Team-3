@@ -18,7 +18,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -35,7 +35,7 @@ from common.exceptions import (
     TimeoutExceededError,
     UnsupportedArchitectureError,
 )
-from common.models import InferenceRequest
+from common.models import AttestationReport, InferenceRequest, ProofArtifact
 from common.tensors import decode_tensor
 from inference.auth import Authorization
 from verification.verifiers import serialize_attestation, serialize_proof_artifact
@@ -52,6 +52,7 @@ JOB_KEY = "jobs:job:{}"
 INPUT_KEY = "jobs:input:{}"
 INDEX_KEY = "jobs:by_key:{}:{}"
 PENDING_SET = "jobs:pending"
+SETTLING_SET = "jobs:settling"
 
 _TASK_ID = re.compile(r"^(0x)?[0-9a-fA-F]{64}$")
 _SHA256_HEX = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -60,6 +61,9 @@ _SHA256_HEX = re.compile(r"^[0-9a-fA-F]{64}$")
 # Requirement 3.5). Clients poll GET /jobs/{id} for this long, then stop.
 JOB_BUDGET_S = 30.0 + 120.0
 POLL_AFTER_S = 5
+# Settlement waits for chain confirmation, which can take minutes on Galileo. It runs after the
+# receipt is delivered, so it has its own budget.
+SETTLEMENT_BUDGET_S = 300.0
 
 
 class InvalidJobError(ValueError):
@@ -144,6 +148,7 @@ class JobService:
         max_concurrent: int = 4,
         timeout_s: float = JOB_BUDGET_S,
         submitter: Any = None,
+        settlement_timeout_s: float = SETTLEMENT_BUDGET_S,
         clock: Callable[[], float] = time.time,
     ):
         self.redis = redis_client
@@ -151,6 +156,7 @@ class JobService:
         self.tee = tee
         self.prover = prover
         self.submitter = submitter
+        self.settlement_timeout_s = settlement_timeout_s
         self.timeout_s = timeout_s
         self.clock = clock
         self._slots = asyncio.Semaphore(max_concurrent)
@@ -207,6 +213,8 @@ class JobService:
                 await self.redis.srem(PENDING_SET, job_id)
                 continue
             self._start(job_id)
+        for raw in await self.redis.smembers(SETTLING_SET):
+            self._track(self._settle_job(raw.decode() if isinstance(raw, bytes) else raw))
 
     async def shutdown(self) -> None:
         """Stop the running jobs. Their state stays unfinished, so the next start resumes them."""
@@ -215,7 +223,10 @@ class JobService:
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
     def _start(self, job_id: str) -> None:
-        task = asyncio.create_task(self._run(job_id))
+        self._track(self._run(job_id))
+
+    def _track(self, work: Coroutine[Any, Any, None]) -> None:
+        task = asyncio.create_task(work)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
@@ -264,6 +275,8 @@ class JobService:
             await self._save(job)
             await self.redis.delete(INPUT_KEY.format(job_id))
             await self.redis.srem(PENDING_SET, job_id)
+            if job["status"] == COMPLETED and self.submitter is not None:
+                await self._begin_settlement(job_id)
 
     async def _execute(self, job: dict[str, Any], input_data: bytes) -> dict[str, Any]:
         """Run the stages for one job and return its receipt as JSON-ready data."""
@@ -271,13 +284,43 @@ class JobService:
         execution = await self.engine.execute(request)
         attestation = self.tee.generate_attestation(input_data, execution.output)
         proof = await self.prover.generate_proof(execution, input_data)
-        settlement = await self._settle(job["task_id"], attestation, proof, execution.model_cid)
+        settlement = {"status": "pending"} if self.submitter is not None else {"status": "disabled"}
         return {
             "execution": execution.model_dump(mode="json"),
             "attestation": json.loads(serialize_attestation(attestation, self.tee.enclave.public_key_bytes)),
             "zkml_proof": json.loads(serialize_proof_artifact(proof)),
             "settlement": settlement,
         }
+
+    async def _begin_settlement(self, job_id: str) -> None:
+        await self.redis.sadd(SETTLING_SET, job_id)
+        self._track(self._settle_job(job_id))
+
+    async def _settle_job(self, job_id: str) -> None:
+        """Settle a delivered receipt, then record the outcome on the job.
+
+        It works from the stored receipt, not from in-memory objects, so a restart can finish it.
+        Only a cancellation leaves the job pending; every other outcome is recorded.
+        """
+        job = await self._load(job_id)
+        if job is None or job["receipt"] is None or job["receipt"]["settlement"]["status"] != "pending":
+            await self.redis.srem(SETTLING_SET, job_id)
+            return
+        receipt = job["receipt"]
+        try:
+            async with asyncio.timeout(self.settlement_timeout_s):
+                settlement = await self._settle(
+                    job["task_id"],
+                    attestation_from_receipt(receipt["attestation"]["report"]),
+                    proof_from_receipt(receipt["zkml_proof"]),
+                    receipt["execution"]["model_cid"],
+                )
+        except TimeoutError:
+            settlement = {"status": "failed", "reason": f"settlement exceeded {self.settlement_timeout_s:.0f} s"}
+        receipt["settlement"] = settlement
+        job["updated_at"] = self.clock()
+        await self._save(job)
+        await self.redis.srem(SETTLING_SET, job_id)
 
     async def _settle(self, task_id: str, attestation: Any, proof: Any, model_cid: str) -> dict[str, Any]:
         """Submit the proof and the model CID on chain. A failure is recorded, not raised.
@@ -321,3 +364,23 @@ def summary(job: dict[str, Any], created: bool) -> dict[str, Any]:
         "deadline": job["deadline"],
         "created": created,
     }
+
+
+def attestation_from_receipt(report: dict[str, Any]) -> AttestationReport:
+    return AttestationReport(
+        enclave_measurement=report["enclave_measurement"],
+        signer_identity=report["signer_identity"],
+        input_hash=report["input_hash"],
+        output_hash=report["output_hash"],
+        hardware_signature=base64.b64decode(report["hardware_signature"]),
+        timestamp=report["timestamp"],
+    )
+
+
+def proof_from_receipt(zkml_proof: dict[str, Any]) -> ProofArtifact:
+    return ProofArtifact(
+        proof_bytes=base64.b64decode(zkml_proof["proof_bytes"]),
+        public_inputs=zkml_proof["public_inputs"],
+        verification_key_ref=zkml_proof["verification_key_ref"],
+        backend=zkml_proof["backend"],
+    )

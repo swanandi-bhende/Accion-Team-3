@@ -39,7 +39,7 @@ that starts integrating against it. Anything short of that stays **PARTIAL** or
 | 8 | `InferenceRequest` payload (exact fields, encoding, `task_id` format) | Team C | **PARTIAL** — schema documented, no real traffic | DRIFT-003 (`input_data` base64 vs raw) still open | **Yes** — blocks 18.6 |
 | 9 | Response expectations (sync / polling / webhook, timeout budget) | Team C | **NOT READY** | DRIFT-012: our response does not echo `task_id` | **Yes** |
 | 10 | Model id → registry mapping | Team C | **NOT READY** | `toy_*` models are placeholders | **Yes** |
-| 11 | Authentication to `POST /inference` | Team C + 3b | **NOT READY** — none implemented on either side | — | No for staging, yes for production |
+| 11 | Authentication to `POST /inference` | Team C + 3b | **PARTIAL** — 3b requires a signed challenge from the task's worker (same as `POST /jobs`); Team C must sign with that wallet | `docs/JOB_API.md` §Authorization; live check only against a funded task | No for staging, yes for production |
 | 12 | Team C staging URL and trigger owner | Team C | **NOT READY** | — | Blocks the scheduled cross-team job |
 | 13 | Our endpoints and schemas, handed to Team C | 3b | **READY** (2026-10-20) | `docs/INTEGRATION_CONTRACTS.md` §Team C | No |
 | 14 | Config-driven ABI/address swap | 3b | **READY** (2026-10-20) | `CONTRACT_ARTIFACTS_DIR`, `*_ARTIFACT`, `MOCK_DEPLOYMENTS_PATH` | No |
@@ -77,7 +77,7 @@ that starts integrating against it. Anything short of that stays **PARTIAL** or
 2. **Response contract** (row 9): synchronous, polling, or webhook; acceptable
    timeout; and whether they need `task_id` echoed (DRIFT-012 — it is not today).
 3. **Model ids** (row 10) and their mapping to registry entries.
-4. **Authentication** (row 11) for `POST /inference`.
+4. **Authentication** (row 11): confirm their agent can sign a challenge with the task worker's wallet for `POST /inference`.
 5. **Three to five real payloads with expected responses**, and their error cases.
 6. **How their frontend reads results** — no results API exists on our side.
 7. **A staging URL and a named person to trigger the cross-team run** (row 12).
