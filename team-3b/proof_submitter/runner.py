@@ -69,6 +69,7 @@ async def main() -> None:
         redis_client,
         settings.proof_submitter_private_key,
         signer_address=signer,
+        alert_webhook_url=settings.alert_webhook_url,
     )
 
     shutdown = asyncio.Event()

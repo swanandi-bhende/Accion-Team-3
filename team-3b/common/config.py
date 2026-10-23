@@ -47,9 +47,9 @@ class Settings(BaseSettings):
     tee_mode: str | None = None
     tee_trusted_keys_path: str | None = None
     tee_inference_timeout_s: float = 30.0
-    # 64 hex characters (a 256-bit AES key) that open sealed models. Blank means each
-    # engine generates its own key, which is only useful for models sealed in-process.
-    tee_sealed_key: str | None = None
+    # File holding the 256-bit key that opens sealed models. Created on first use if missing.
+    # Unset means each engine generates its own key, so sealed models do not survive a restart.
+    tee_sealed_key_path: str | None = None
 
     # --- Storage ---
     redis_url: str | None = None
@@ -94,6 +94,9 @@ class Settings(BaseSettings):
     proof_batch_window_s: float = 10.0
     proof_submitter_private_key: str = ""
     proof_submitter_contract_address: str | None = None
+    # Dead-letter alerts are always logged and recorded in Redis. When set, they are also posted
+    # here (e.g. a Slack-compatible incoming webhook). The URL is never logged.
+    alert_webhook_url: str | None = None
 
     # --- zkML ---
     # "ezkl" is production: zero-knowledge proofs from the model's circuit. It needs the
@@ -121,27 +124,6 @@ class Settings(BaseSettings):
     execution_trigger: Literal["task_created_funded", "bid_accepted"] = "task_created_funded"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
-
-    @field_validator("tee_sealed_key", mode="before")
-    @classmethod
-    def _blank_sealed_key_is_unset(cls, value: object) -> object:
-        """Validate the sealed key's shape at startup, so a bad key fails before serving."""
-        if isinstance(value, str) and not value.strip():
-            return None
-        if isinstance(value, str):
-            try:
-                key = bytes.fromhex(value.removeprefix("0x"))
-            except ValueError as error:
-                raise ValueError("TEE_SEALED_KEY must be hex") from error
-            if len(key) != 32:
-                raise ValueError("TEE_SEALED_KEY must be 64 hex characters (a 256-bit key)")
-        return value
-
-    def sealed_key_bytes(self) -> bytes | None:
-        """The configured sealing key as bytes, or None when it is unset."""
-        if self.tee_sealed_key is None:
-            return None
-        return bytes.fromhex(self.tee_sealed_key.removeprefix("0x"))
 
     @field_validator("web3_chain_id", mode="before")
     @classmethod

@@ -40,6 +40,7 @@ from inference.jobs import (
     JobService,
     summary,
 )
+from inference.sealed_key import load_sealed_key
 from inference.tee_runtime import TEERuntime
 from proof_generator.zkml_prover import ZkMLProver
 from proof_submitter.submitter import ProofSubmitter
@@ -78,6 +79,7 @@ def build_settlement(settings: Settings, redis_client: redis.Redis) -> ProofSubm
         private_key=key,
         batch_window=settings.proof_batch_window_s,
         allow_development_backend=settings.proof_allow_development_backend,
+        alert_webhook_url=settings.alert_webhook_url,
     )
 
 
@@ -117,7 +119,7 @@ def build_app_state(app: FastAPI) -> State:
         tee=tee_runtime,
         redis_client=redis_client,
         timeout_s=settings.tee_inference_timeout_s,
-        sealed_key=settings.sealed_key_bytes(),
+        sealed_key=load_sealed_key(settings.tee_sealed_key_path),
     )
     zkml_prover = ZkMLProver(
         model_registry,

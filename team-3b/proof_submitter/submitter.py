@@ -9,6 +9,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
+
 from common.constants import DEVELOPMENT_PROOF_BACKEND, PRODUCTION_PROOF_BACKENDS
 from common.exceptions import ProofNotSubmittableError
 from common.models import AttestationReport, ProofArtifact
@@ -56,6 +58,7 @@ class ProofSubmitter:
     MAX_RETRIES = 3
     RETRY_INTERVAL = 10.0
     DLQ_KEY = "proof_submitter:dlq"
+    ALERTS_KEY = "proof_submitter:alerts"
 
     def __init__(
         self,
@@ -68,8 +71,12 @@ class ProofSubmitter:
         clock: Callable[[], float] = time.time,
         signer_address: str | None = None,
         allow_development_backend: bool = False,
+        alert_webhook_url: str | None = None,
     ):
         self.web3 = web3
+        # Where dead-letter alerts are also posted, e.g. a Slack-compatible incoming webhook.
+        # The URL is never logged, because it usually carries a token.
+        self.alert_webhook_url = alert_webhook_url
         self.contract = contract
         self.redis = redis_client
         self.private_key = private_key
@@ -96,6 +103,7 @@ class ProofSubmitter:
             "dlq_batches": 0,
             "last_batch_size": 0,
             "rejected_by_contract": 0,
+            "alerts_raised": 0,
         }
 
     def _may_submit(self, zkml_proof: ProofArtifact) -> bool:
@@ -209,7 +217,7 @@ class ProofSubmitter:
                         [proof.task_id for proof in rejected],
                     )
                     self.metrics["rejected_by_contract"] += len(rejected)
-                    await self._persist_to_dlq(rejected, RuntimeError("rejected on chain via ProofRejected"))
+                    await self._dead_letter(rejected, RuntimeError("rejected on chain via ProofRejected"))
                 return tx_hash
             except Exception as error:
                 last_error = error
@@ -219,8 +227,7 @@ class ProofSubmitter:
                         "Proof batch retry attempt=%s size=%s error=%s", attempt, len(remaining), error
                     )
                     await self.sleep(self.RETRY_INTERVAL)
-        await self._persist_to_dlq(remaining, last_error)
-        await self._emit_alert(remaining, last_error)
+        await self._dead_letter(remaining, last_error)
         return None
 
     def _unrecorded(self, proofs: list[PendingProof]) -> list[PendingProof]:
@@ -347,9 +354,41 @@ class ProofSubmitter:
         await self.redis.lpush(self.DLQ_KEY, json.dumps(payload))
         self.metrics["dlq_batches"] += 1
 
+    async def _dead_letter(self, proofs: list[PendingProof], error: Exception | None) -> None:
+        """Persist proofs to the dead-letter queue and raise the alert for them (Requirement 6.5)."""
+        await self._persist_to_dlq(proofs, error)
+        await self._emit_alert(proofs, error)
+
     async def _emit_alert(self, proofs: list[PendingProof], error: Exception | None) -> None:
-        logger.error(
-            "PROOF_SUBMISSION_FAILED_PERMANENTLY task_ids=%s error=%s",
-            [proof.task_id for proof in proofs],
-            error,
-        )
+        """Record the alert in Redis, log it, and post it to the webhook when one is configured.
+
+        The Redis record is written after the post, so it carries the delivery result:
+        ``not_configured``, ``delivered``, or ``failed: <exception type>``. A failed post never
+        stops the dead-letter path.
+        """
+        task_ids = [proof.task_id for proof in proofs]
+        message = str(error) if error else "unknown error"
+        logger.error("PROOF_SUBMISSION_FAILED_PERMANENTLY task_ids=%s error=%s", task_ids, message)
+        alert: dict[str, Any] = {
+            "event": "proof_submission_failed_permanently",
+            "task_ids": task_ids,
+            "error": message,
+            "failed_at": self.clock(),
+            "text": f"Proof submission failed permanently for {len(task_ids)} task(s): {message}",
+        }
+        alert["delivery"] = await self._deliver_alert(alert)
+        await self.redis.lpush(self.ALERTS_KEY, json.dumps(alert))
+        self.metrics["alerts_raised"] += 1
+
+    async def _deliver_alert(self, alert: dict[str, Any]) -> str:
+        if not self.alert_webhook_url:
+            return "not_configured"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(self.alert_webhook_url, json=alert)
+                response.raise_for_status()
+        except httpx.HTTPError as error:
+            # Only the exception type is reported: the exception text can include the URL.
+            logger.error("ALERT_DELIVERY_FAILED error=%s", type(error).__name__)
+            return f"failed: {type(error).__name__}"
+        return "delivered"

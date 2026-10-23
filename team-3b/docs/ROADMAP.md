@@ -50,8 +50,16 @@ the bid that settlement pays.
   (addresses and ABIs are delivered).
 - A bid/worker policy: `settleTask` pays `taskWorker`, so proofs on a task nobody
   bid on are recorded but unpayable (see `docs/INTEGRATION_CONTRACTS.md` §6).
-- Hardware-backed TEE attestation rather than the simulator.
-- Production zkML backend selection and proof-time budgets for real model sizes.
+- Hardware-backed TEE (Requirements 2 and 8). Today's simulator has an in-memory attestation
+  key, a constant measurement, a plaintext sealed key, no real secure erase, and no hardware
+  test in CI. Closing it needs a Linux SGX or SEV host and an attestation service. It cannot be
+  closed on macOS. See the limit in `docs/CHECKPOINTS.md`.
+- Sealed models: the key is now a file (`TEE_SEALED_KEY_PATH`), but no production path seals
+  models yet. Decide where sealing happens before relying on the key file for persistence.
+- zkML at production size. EZKL is measured up to a 1,053,700-weight MLP (91 s proving, 2.0 GB
+  proving key). A 500 MB model is not feasible on EZKL with a 120 s budget here. Choosing a
+  proving approach for that size is open. Compose settlement needs a linux/amd64 host, because
+  the EZKL wheel is missing for linux/arm64 containers. That host has not been used yet.
 - **Storage: IPFS by default, 0G Storage behind `MODEL_STORAGE_BACKEND=0g`.** The 0G
   adapter (`common/storage/zerog_backend.py`) runs the official `0g-storage-client` CLI,
   which builds the Merkle tree, submits the Flow transaction and uploads the segments. It is
@@ -60,5 +68,9 @@ the bid that settlement pays.
   used. The CLI is built into `docker/base.Dockerfile` at a pinned commit, so every service
   image has it. A wallet short of gas is refused with `ConfigurationError` rather than retried.
   Requirement 7 names IPFS, Filecoin and 0G as options, so IPFS stays the default.
+- **Dead-letter alerts (Requirement 6.5).** A proof that is dead-lettered, whether after failed
+  retries or rejected on chain, raises an alert. It is logged, recorded in Redis
+  (`proof_submitter:alerts`) with its delivery result, and posted to `ALERT_WEBHOOK_URL` when
+  that is set. No channel is configured yet, so alerts currently stay in Redis and the logs.
 - A SuperLink deployment validated in staging, plus TLS, client authentication,
   and cryptographic secure aggregation for the federated track.

@@ -56,9 +56,9 @@ for the services that use them.
 
 Optional keys with working defaults: `TEE_INFERENCE_TIMEOUT_S` (30),
 `PROOF_BATCH_WINDOW_S` (10).
-`TEE_SEALED_KEY` (blank) is the 256-bit key that opens sealed models. Blank gives
-each engine its own random key, so a sealed model only runs in the process that
-sealed it. Services that share a sealed model must share this value.
+`TEE_SEALED_KEY_PATH` names the file holding the 256-bit key that opens sealed models. It is
+created on first use. Unset gives each engine its own random key, so a sealed model only runs in
+the process that sealed it. Services that share a sealed model must read the same file.
 
 Model uploads are durable. `ModelRegistry.upload_model` writes the binary to
 `data/upload_spool/` and queues it in Redis before the first attempt. It retries

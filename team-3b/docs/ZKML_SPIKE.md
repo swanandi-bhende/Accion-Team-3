@@ -7,7 +7,7 @@ JAX/TensorFlow-native option under the repository's Docker-oriented setup.
 
 | Candidate | Local setup | Model fit | Transformer-small outlook | Deployment risk |
 | --- | --- | --- | --- | --- |
-| EZKL | Installed and importable: `ezkl 23.0.5`, `onnx 1.23.0`, `onnxruntime 1.30.0` | Real tiny fixtures verified for all four supported architectures | Larger-model scaling remains unmeasured | Requires production-sized model benchmarks |
+| EZKL | Installed and importable: `ezkl 23.0.5`, `onnx 1.23.0`, `onnxruntime 1.30.0` | Real tiny fixtures verified for all four supported architectures | MLPs up to 1,053,700 weights measured (see the scale ladder); the 500 MB target is not feasible on EZKL here | A 500 MB model needs a different proving approach or hardware, not more tuning |
 | Circom + snarkjs | `circom` and `snarkjs` binaries are present | Manual circuit work is required for each model family | Poor near-term fit without substantial circuit engineering | High integration and artifact-management overhead |
 | JAX/TensorFlow-native zkML | No candidate dependency was present | No repository-compatible prototype completed | Unconfirmed | High ecosystem and packaging uncertainty |
 
@@ -50,8 +50,42 @@ The full machine-readable result is in
 | cnn | 10.00 s | 0.060 s | 19,835 B |
 | transformer_small | 37.01 s | 0.168 s | 42,623 B |
 
-These measurements use tiny fixtures; production-sized model scaling remains
-unmeasured.
+These measurements use tiny fixtures. The scale ladder below goes further, and the
+500 MB target is still unmeasured.
+
+### Scale ladder: MLP width 16 to 1024 (measured)
+
+`scripts/zkml/ezkl_scale_benchmark.py` builds a two-layer MLP (width -> width -> 4), runs
+the same EZKL setup, prove and verify steps, and writes one result per width to
+`data/zkml_spike/scale/`. Each width ran in its own process on a 16 GB arm64 Mac, with
+artifacts kept outside the repository. Every proof verified.
+
+| Width | Weights | Setup (s) | Prove (s) | Verify (s) | Proof (bytes) | Proving key (bytes) | Peak memory (MB) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 340 | 16.8 | 16.3 | 0.20 | 20,161 | 553,912,075 | 1,096 |
+| 64 | 4,420 | 10.7 | 14.5 | 0.10 | 27,199 | 553,912,075 | 1,080 |
+| 256 | 66,820 | 11.7 | 12.9 | 0.08 | 55,580 | 553,912,075 | 1,131 |
+| 512 | 264,708 | 28.3 | 66.1 | 0.15 | 105,892 | 906,496,987 | 1,532 |
+| 768 | 593,668 | 34.9 | 37.3 | 0.20 | 155,921 | 1,259,081,899 | 1,618 |
+| 1024 | 1,053,700 | 39.5 | 91.3 | 0.45 | 218,375 | 1,989,417,635 | 2,688 |
+
+What this shows:
+
+- **Proof size grows with the model, so the Property 7 question stays open.** Across this
+  ladder it grows slowly at small sizes, then roughly doubles for each 4x in weights above
+  about 66,000. The "constant regardless of model size"
+  requirement is not met by EZKL.
+- **Proving time is not a clean trend.** Width 768 proved faster than width 512, so single runs
+  are noisy. The largest measured proof took 91 s, against the 120 s budget for a 500 MB model.
+- **The proving key sets the ceiling.** It starts at the 554 MB floor that EZKL chooses for
+  these circuits, then grows with the model. At 1,053,700 weights it is 2.0 GB, and peak
+  memory is 2.7 GB.
+
+**Extrapolation, not a measurement.** A 500 MB model is about 125 million float32 weights,
+roughly 120 times the largest model measured here. Linear extrapolation from width 1024
+puts proving time in the order of hours, and the proving key in the order of hundreds of
+gigabytes. Those are rough figures from a short ladder. They are enough to say that a 500 MB
+model is not feasible on EZKL with a 120-second budget on this hardware.
 
 The scheduled workflow `.github/workflows/zkml-regression.yml` reruns this
 benchmark weekly and checks that verification remains true, proof generation

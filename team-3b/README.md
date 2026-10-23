@@ -7,7 +7,7 @@ The integration of Artificial Intelligence with Web3 faces a critical vulnerabil
 
 ## Core Responsibilities
 - **Blockchain Event Monitoring:** Listening to Team 3a's on-chain events (`TaskCreated`, `TaskFunded`) to trigger workloads.
-- **Secure Execution:** Executing inference inside a TEE (Intel SGX or AMD SEV) for memory isolation and encryption.
+- **Secure Execution:** Executing inference inside a TEE (Intel SGX or AMD SEV) for memory isolation and encryption. **Not hardware-backed in this build:** the TEE is a software simulator with an unbound attestation key and no real secure erase. See the hardware TEE limit in [docs/CHECKPOINTS.md](docs/CHECKPOINTS.md).
 - **Proof Generation:** Generating zero-knowledge (zkML) proofs that attest to correct execution without revealing model weights.
 - **Federated Learning:** Orchestrating federated learning pipelines across nodes via the Flower framework.
 - **On-chain Settlement:** Submitting verifiable cryptographic proofs and execution artifacts (CIDs) back to the blockchain.

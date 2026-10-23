@@ -34,8 +34,37 @@ content. Focused edge tests cover empty input, unusual model identifiers, the
 exact 500 MB boundary, the 30.0-second timeout configuration, and reconnecting
 the registry after closing its Redis client.
 
-The current limitations are deliberate: the TEE remains a simulator rather
-than hardware-backed SGX/SEV, storage integrations remain mocked in tests, and
+**Hardware TEE: not implemented in this build (Requirements 2 and 8).** Every
+`TEE_MODE` value (`sgx` and `sev`) runs the same software simulator,
+`inference/enclave_sim.py`. The runtime logs "not hardware-attested" on start. Specifically:
+
+- **Attestation is not hardware-bound.** The signature uses an Ed25519 key generated in
+  memory at process start. It is not tied to any CPU or enclave, and it changes on every
+  restart. A verifier can check the signature, but nothing proves it came from real hardware.
+- **Measurement is a constant.** It is the string `simulated_enclave_measurement_v1`, which
+  identifies nothing.
+- **The sealed key is a plaintext file.** `TEE_SEALED_KEY_PATH` names a 32-byte file, created
+  with mode 0600 on first use (`inference/sealed_key.py`). The file is not protected by hardware,
+  and the host can read it. With the path unset, each engine generates its own key, so a sealed
+  model cannot be opened after a restart, and the service logs a warning. No production code path
+  seals models yet. The stable key file is what lets sealed models survive restarts once one does.
+- **Isolation is a separate Python process.** The host can read its memory.
+- **Secure erase (Requirement 8.3) is not met.** `secure_erase` zeroes a copy of the buffer,
+  not the caller's buffer, and it silently ignores errors.
+
+Closing this needs a Linux host with SGX or SEV hardware and an attestation service. It cannot
+be closed on macOS, and no hardware-backed test runs in CI.
+
+**zkML at production size: not measured (Requirements 1.1 and 3.5).** The EZKL backend has been
+measured on tiny fixtures and on a two-layer MLP up to 1,053,700 weights
+(`docs/ZKML_SPIKE.md`, scale ladder). Every proof verified, and the largest took 91 s to prove.
+Nothing near 500 MB has been run. Extrapolation says a 500 MB model would need hours of proving
+and a proving key of hundreds of gigabytes, so the 120-second budget is not met for that size on
+this hardware. Proof size also grows with the model, so the constant-size requirement (Property 7)
+is not met either. The EZKL wheel is missing only for linux/arm64 containers. EZKL runs natively
+on the arm64 Mac, and the linux/amd64 compose settlement build was not run here.
+
+The remaining limitations are deliberate: storage integrations remain mocked in tests, and
 the Redis restart test skips when no local Redis service is available. CI
 provides a real Redis 7 service container and runs the unit/property gate on
 every push and pull request. Proof generation remains gated on this checkpoint.
@@ -76,7 +105,8 @@ extracted exactly, dispatch requires both TaskCreated and TaskFunded, persisted
 block progress limits replay work, reconnect delays are capped at 60 seconds,
 proof batches carry aligned task/proof/model/result arrays, proofs in one
 window share a transaction, and exhausted retries are preserved in Redis DLQ
-entries with a permanent-failure alert.
+entries with a permanent-failure alert. The alert is logged, recorded in Redis
+(`proof_submitter:alerts`), and posted to `ALERT_WEBHOOK_URL` when that is set.
 
 The composite mock-chain test runs TaskCreated and TaskFunded through deployed
 Hardhat contracts, dispatches a fabricated receipt/proof pair, and confirms a

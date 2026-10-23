@@ -55,6 +55,7 @@ from common.tensors import encode_tensor
 from event_listener.config import load_contract_abi
 from event_listener.listener import EventListener
 from inference.engine import InferenceEngine
+from inference.sealed_key import load_sealed_key
 from inference.tee_runtime import TEERuntime
 from proof_generator.zkml_prover import ZkMLProver
 from proof_submitter.submitter import ProofSubmitter
@@ -601,7 +602,7 @@ def build_pipeline(settings: Settings | None = None, **overrides: Any) -> Pipeli
         tee,
         redis_client,
         timeout_s=settings.tee_inference_timeout_s,
-        sealed_key=settings.sealed_key_bytes(),
+        sealed_key=load_sealed_key(settings.tee_sealed_key_path),
     )
     prover = ZkMLProver(
         registry,
