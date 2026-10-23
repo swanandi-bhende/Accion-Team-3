@@ -1,9 +1,4 @@
-"""Step 16.6 backpressure/concurrency and Step 16.8 cross-stage failure injection.
-
-The point of these tests is the paths between stages: a stage that fails must
-leave the pipeline able to process the next task, and a burst of tasks must not
-run more concurrent TEE inferences than the configured cap.
-"""
+"""Pipeline resilience: backpressure, concurrency, cross-stage failure injection, and a real Redis."""
 
 from __future__ import annotations
 
@@ -19,6 +14,7 @@ from typing import Any
 
 import fakeredis.aioredis as fakeredis
 import pytest
+import redis.asyncio as redis
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from common.constants import DEVELOPMENT_PROOF_BACKEND
@@ -30,6 +26,7 @@ from common.models import (
     InferenceRequest,
     ProofArtifact,
 )
+from event_listener.listener import EventListener
 from inference.engine import InferenceEngine
 from inference.pipeline import (
     OUTCOME_DROPPED_INTEGRITY_FAILURE,
@@ -45,8 +42,11 @@ from tests import chain_helper
 from tests.onnx_fixtures import mlp_model_bytes
 
 SEALED_KEY = b"mock_sealed_key_0123456789abcdef"
+
 MODEL_BINARY = mlp_model_bytes()
+
 SLOW_MODEL = "dd" * 32
+
 FAST_MODEL = "ee" * 32
 
 
@@ -89,7 +89,9 @@ class DelayedEngine:
 
 
 class FakeTee:
-    def generate_attestation(self, input_data: bytes, output: bytes) -> AttestationReport:
+    def generate_attestation(
+        self, input_data: bytes, output: bytes
+    ) -> AttestationReport:
         return AttestationReport(
             enclave_measurement="fake-measurement",
             signer_identity="fake-signer",
@@ -106,7 +108,9 @@ class FakeProver:
     def __init__(self, timeout_for: Iterable[str] = ()) -> None:
         self.timeout_for = set(timeout_for)
 
-    async def generate_proof(self, receipt: ExecutionReceipt, input_data: bytes | None = None) -> ProofArtifact:
+    async def generate_proof(
+        self, receipt: ExecutionReceipt, input_data: bytes | None = None
+    ) -> ProofArtifact:
         if receipt.model_id in self.timeout_for:
             raise TimeoutError("proof generation exceeded its timeout")
         return ProofArtifact(
@@ -182,10 +186,6 @@ def _fake_pipeline(
     )
 
 
-# --------------------------------------------------------------------------- #
-# Step 16.6 - backpressure and concurrency limits
-# --------------------------------------------------------------------------- #
-
 @pytest.mark.asyncio
 async def test_inference_concurrency_is_capped_and_reported() -> None:
     """Nine tasks through three workers: the TEE never sees more than three at once.
@@ -215,7 +215,9 @@ async def test_inference_concurrency_is_capped_and_reported() -> None:
 
 @pytest.mark.asyncio
 async def test_full_queue_applies_backpressure_and_logs_being_throttled() -> None:
-    pipeline = _fake_pipeline(DelayedEngine(delay=0.01), max_in_flight=2, queue_maxsize=2)
+    pipeline = _fake_pipeline(
+        DelayedEngine(delay=0.01), max_in_flight=2, queue_maxsize=2
+    )
     pipeline._queue.put_nowait(_task("t0", FAST_MODEL))
     pipeline._queue.put_nowait(_task("t1", FAST_MODEL))
 
@@ -236,12 +238,10 @@ async def test_full_queue_applies_backpressure_and_logs_being_throttled() -> Non
     assert pipeline.stats()["outcome_counts"] == {OUTCOME_SUBMITTED: 3}
 
 
-# --------------------------------------------------------------------------- #
-# Step 16.8 - failure injection across stage boundaries
-# --------------------------------------------------------------------------- #
-
 @pytest.mark.asyncio
-async def test_tee_integrity_failure_drops_that_task_only(memory_storage: StorageBackend) -> None:
+async def test_tee_integrity_failure_drops_that_task_only(
+    memory_storage: StorageBackend,
+) -> None:
     """A model whose plaintext cannot match its committed hash is dropped, not retried.
 
     ``InferenceEngine`` reaches the real ``TEERuntime`` here: the blob is a
@@ -271,9 +271,16 @@ async def test_tee_integrity_failure_drops_that_task_only(memory_storage: Storag
 
     tee = TEERuntime("sgx")
     tee.initialize()
-    engine = InferenceEngine(registry, tee, redis_client, timeout_s=30.0, sealed_key=SEALED_KEY)
+    engine = InferenceEngine(
+        registry, tee, redis_client, timeout_s=30.0, sealed_key=SEALED_KEY
+    )
     pipeline = Pipeline(
-        SimpleNamespace(), engine, tee, FakeProver(), RecordingSubmitter(), max_in_flight=2
+        SimpleNamespace(),
+        engine,
+        tee,
+        FakeProver(),
+        RecordingSubmitter(),
+        max_in_flight=2,
     )
 
     await pipeline.enqueue(_task("t-broken", broken_model_id))
@@ -349,7 +356,9 @@ async def test_unauthenticated_model_blob_is_dropped_as_an_integrity_failure(
 
     tee = TEERuntime("sgx")
     tee.initialize()
-    engine = InferenceEngine(registry, tee, redis_client, timeout_s=30.0, sealed_key=SEALED_KEY)
+    engine = InferenceEngine(
+        registry, tee, redis_client, timeout_s=30.0, sealed_key=SEALED_KEY
+    )
     pipeline = _fake_pipeline(engine, max_in_flight=1)
 
     await pipeline.enqueue(_task("t-tampered", tampered_model_id))
@@ -368,7 +377,9 @@ async def test_real_prover_timeout_maps_to_a_dropped_task(
     redis_client = fakeredis.FakeRedis(decode_responses=False)
     registry = ModelRegistry(redis_client, memory_storage)
     await registry.upload_model(FAST_MODEL, MODEL_BINARY, architecture="mlp")
-    prover = ZkMLProver(registry, proving_key_store=str(tmp_path / "keys"), timeout_s=0.0)
+    prover = ZkMLProver(
+        registry, proving_key_store=str(tmp_path / "keys"), timeout_s=0.0
+    )
     pipeline = _fake_pipeline(DelayedEngine(delay=0.0), prover=prover, max_in_flight=1)
 
     await pipeline.enqueue(_task("t-timeout", FAST_MODEL))
@@ -385,7 +396,13 @@ async def test_exhausted_submission_retries_land_in_dlq_and_the_pipeline_continu
     """The first batch reverts until it is dead-lettered; the next task still settles."""
     web3, task_manager, escrow = team_a_chain
     redis_client: Any = fakeredis.FakeRedis(decode_responses=False)
-    submitter = ProofSubmitter(web3, task_manager, redis_client, batch_window=10.0, allow_development_backend=True)
+    submitter = ProofSubmitter(
+        web3,
+        task_manager,
+        redis_client,
+        batch_window=10.0,
+        allow_development_backend=True,
+    )
     # Retries must be instant here; the batch window stays realistic so the
     # background flush timer cannot race the explicit flush.
     submitter.RETRY_INTERVAL = 0.0
@@ -437,8 +454,32 @@ async def test_exhausted_submission_retries_land_in_dlq_and_the_pipeline_continu
     assert settled[0].tx_hash is not None
     assert web3.eth.get_transaction_receipt(settled[0].tx_hash).status == 1
     assert submitter.metrics["proofs_submitted"] == 1
-    assert attempts["count"] == submitter.MAX_RETRIES + 1  # the dead-lettered batch, then t-b
+    assert (
+        attempts["count"] == submitter.MAX_RETRIES + 1
+    )  # the dead-lettered batch, then t-b
     assert pipeline.stats()["outcome_counts"] == {
         OUTCOME_DROPPED_SUBMISSION_FAILED: 1,
         OUTCOME_SUBMITTED: 1,
     }
+
+
+@pytest.mark.asyncio
+async def test_wave2_persistence_and_dlq_use_real_redis_when_available() -> None:
+    client = redis.from_url("redis://localhost:6379", decode_responses=False)
+    try:
+        try:
+            await client.ping()
+        except Exception:
+            pytest.skip("Redis service is not available")
+
+        listener = EventListener(None, None, None, client)
+        await listener._persist_block_number(123)
+        assert await listener._get_last_processed_block() == 123
+
+        submitter = ProofSubmitter(None, None, client)
+        await submitter._persist_to_dlq([], RuntimeError("real redis check"))
+        entry = await client.lindex(submitter.DLQ_KEY, 0)
+        assert entry is not None
+        await client.delete(submitter.DLQ_KEY, listener.LAST_BLOCK_KEY)
+    finally:
+        await client.close()

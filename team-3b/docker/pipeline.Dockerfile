@@ -9,12 +9,12 @@
 # would follow the chain and write the same listener state in Redis.
 FROM base
 
-COPY common ./common
-COPY event_listener ./event_listener
-COPY inference ./inference
-COPY proof_generator ./proof_generator
-COPY proof_submitter ./proof_submitter
-COPY verification ./verification
+COPY src/common ./common
+COPY src/event_listener ./event_listener
+COPY src/inference ./inference
+COPY src/proof_generator ./proof_generator
+COPY src/proof_submitter ./proof_submitter
+COPY src/verification ./verification
 
 # ZKML_BACKEND=ezkl needs the ezkl package, which has no linux/arm64 wheel. Build with
 # --build-arg INSTALL_ZKML=true on a linux/amd64 host; the default stays on the development

@@ -18,6 +18,7 @@ import pytest
 import pytest_asyncio
 from eth_account import Account
 from eth_account.messages import encode_defunct
+from eth_account.signers.local import LocalAccount
 from httpx import ASGITransport, AsyncClient
 
 from common.model_registry import ModelRegistry
@@ -45,8 +46,8 @@ async def signed_body(
     model_id: str | None = MODEL_ID,
     model_cid: str | None = None,
     task_id: str = TASK_ID,
-    account: Account = WALLET,
-    signer: Account | None = None,
+    account: LocalAccount = WALLET,
+    signer: LocalAccount | None = None,
 ) -> dict[str, Any]:
     """A job body with a challenge from the service, signed by ``signer`` (default ``account``)."""
     challenge = await app.state.challenges.issue(task_id, account.address)
@@ -69,7 +70,7 @@ async def signed_body(
     return body
 
 
-async def read_headers(task_id: str = TASK_ID, account: Account = WALLET, signer: Account | None = None) -> dict[str, str]:
+async def read_headers(task_id: str = TASK_ID, account: LocalAccount = WALLET, signer: LocalAccount | None = None) -> dict[str, str]:
     """Headers that let one GET /jobs/{id} read a job of ``task_id``. Each read needs a new challenge."""
     challenge = await app.state.challenges.issue(task_id, account.address)
     signature = (signer or account).sign_message(encode_defunct(text=challenge["message"])).signature
@@ -85,7 +86,7 @@ async def wait_for_status(client: AsyncClient, job_id: str, statuses: set[str], 
     deadline = time.monotonic() + timeout
     while True:
         response = await client.get(f"/jobs/{job_id}", headers=await read_headers())
-        job = response.json()
+        job: dict[str, Any] = response.json()
         if job.get("status") in statuses:
             return job
         if time.monotonic() > deadline:
@@ -97,7 +98,7 @@ async def wait_settled(client: AsyncClient, job_id: str, timeout: float = 20.0) 
     """Wait until the job failed, or completed with its settlement recorded (not pending)."""
     deadline = time.monotonic() + timeout
     while True:
-        job = (await client.get(f"/jobs/{job_id}", headers=await read_headers())).json()
+        job: dict[str, Any] = (await client.get(f"/jobs/{job_id}", headers=await read_headers())).json()
         receipt = job.get("receipt")
         if job.get("status") == "failed" or (receipt and receipt["settlement"]["status"] != "pending"):
             return job
@@ -365,7 +366,7 @@ async def test_the_post_reports_the_deadline_the_client_can_poll_until(
 async def register_other_model(seed: int, model_id: str) -> str:
     storage = app.state.storage_backend
     binary = linear_model_bytes(seed)
-    cid = await storage.upload(binary)
+    cid: str = await storage.upload(binary)
     await app.state.model_registry.register(model_id, cid, binary, architecture="linear")
     return cid
 

@@ -8,28 +8,28 @@ services:
   inference-engine:
     build:
       context: .
-      dockerfile: inference/Dockerfile
+      dockerfile: docker/inference.Dockerfile
     user: "0:0"
     volumes:
-      - ./common:/app/common:ro
-      - ./inference:/app/inference:ro
+      - ./src/common:/app/common:ro
+      - ./src/inference:/app/inference:ro
     command: ["uvicorn", "inference.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir=/app/inference", "--reload-dir=/app/common"]
 
   verification-api:
     build:
       context: .
-      dockerfile: verification/Dockerfile
+      dockerfile: docker/verification.Dockerfile
     user: "0:0"
     volumes:
-      - ./common:/app/common:ro
-      - ./proof_generator:/app/proof_generator:ro
-      - ./verification:/app/verification:ro
+      - ./src/common:/app/common:ro
+      - ./src/proof_generator:/app/proof_generator:ro
+      - ./src/verification:/app/verification:ro
     command: ["uvicorn", "verification.app:create_default_app", "--factory", "--host", "0.0.0.0", "--port", "8001", "--reload", "--reload-dir=/app/verification"]
 
   seed-model:
     build:
       context: .
-      dockerfile: inference/Dockerfile
+      dockerfile: docker/inference.Dockerfile
     volumes:
       - ./scripts:/app/scripts:ro
     command: ["python", "-m", "scripts.ops.seed_model_registry"]

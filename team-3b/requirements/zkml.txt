@@ -1,4 +1,4 @@
-# EZKL, the production zkML backend (proof_generator/ezkl_backend.py). ONNX and
+# EZKL, the production zkML backend (src/proof_generator/ezkl_backend.py). ONNX and
 # onnxruntime are in base.txt.
 #
 # The service images install this only when built with INSTALL_ZKML=true, and

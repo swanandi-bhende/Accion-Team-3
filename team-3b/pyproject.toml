@@ -24,10 +24,13 @@ dependencies = [
 ]
 requires-python = ">=3.11"
 
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [project.optional-dependencies]
 # The runtime proof path is the pure-Python development-commitment backend in
-# proof_generator/zkml_prover.py. EZKL/ONNX are only needed by the spike and
-# benchmark tooling (scripts/zkml/ezkl_mlp_benchmark.py), and ezkl==23.0.5 publishes
+# src/proof_generator/zkml_prover.py. EZKL/ONNX are only needed by the benchmark tooling
+# (scripts/zkml/ezkl_mlp_benchmark.py), and ezkl==23.0.5 publishes
 # no wheel for linux/arm64 or Python 3.14 -- which is why they are not runtime
 # dependencies and why they were split out of requirements/base.txt.
 zkml = [
@@ -53,7 +56,8 @@ include = '\.pyi?$'
 # 3.12 rather than the 3.11 floor: numpy's bundled stubs use 3.12 syntax and
 # mypy cannot parse them under an older target.
 python_version = "3.12"
-files = ["common", "inference", "event_listener", "proof_submitter", "proof_generator", "verification", "federated_learning", "scripts", "tests"]
+mypy_path = "src"
+files = ["src", "scripts", "tests"]
 explicit_package_bases = true
 follow_imports = "silent"
 warn_return_any = true
@@ -69,7 +73,8 @@ follow_imports = "skip"
 [tool.ruff]
 line-length = 88
 target-version = "py311"
-exclude = ["mocks", "data", "logs", "venv", ".ruff_cache"]
+exclude = ["data", "venv", ".ruff_cache"]
+src = ["src", "."]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4"]
@@ -80,7 +85,7 @@ ignore = ["E501", "B008"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = ["src", "."]
 python_files = "test_*.py"
 markers = [
     "fl_network: real Flower gRPC server plus client *processes* (slower; run in the fl-integration job)",
