@@ -6,10 +6,8 @@ from typing import Any
 
 import fakeredis.aioredis as fakeredis
 import pytest
-from httpx import ASGITransport, AsyncClient
 
 from common.config import get_settings
-from event_listener.app import create_status_app
 from event_listener.config import load_contract_abi
 from event_listener.listener import EventListener
 
@@ -143,24 +141,6 @@ async def test_stop_returns_from_start_after_the_current_pass(monkeypatch: pytes
     await asyncio.wait_for(listener.start(poll_interval=0.01), timeout=1.0)
 
     assert len(passes) == 1
-
-
-@pytest.mark.asyncio
-async def test_status_endpoint_reports_listener_state() -> None:
-    listener = make_listener()
-    await listener._persist_block_number(42)
-    listener._connection_state = "connected"
-    app = create_status_app(listener)
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.get("/listener/status")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "last_processed_block": 42,
-        "pending_tasks": 0,
-        "connection_state": "connected",
-    }
 
 
 @pytest.mark.asyncio

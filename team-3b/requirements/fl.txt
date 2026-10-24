@@ -1,6 +1,6 @@
 # Federated-learning runtime dependency.
 #
-# Only the fl-orchestrator image installs this (federated_learning/Dockerfile);
+# Only the fl-orchestrator image installs this (docker/fl-orchestrator.Dockerfile);
 # the other four services never import flwr. Any environment that runs the FL
 # tests needs it too, so CI and setup.sh install this file alongside
 # requirements/base.txt.

@@ -86,7 +86,8 @@ async def test_development_proof_is_queued_only_with_the_explicit_opt_in() -> No
     try:
         pending = await instance.submit_proof("task", attestation(), proof(DEVELOPMENT_PROOF_BACKEND), "QmModel")
     finally:
-        instance._batch_timer.cancel()
+        if instance._batch_timer:
+            instance._batch_timer.cancel()
 
     assert pending.task_id == "task"
     assert len(instance._pending_proofs) == 1
@@ -100,7 +101,8 @@ async def test_production_backend_is_accepted_without_any_opt_in(monkeypatch: py
     try:
         await instance.submit_proof("task", attestation(), proof("ezkl"), "QmModel")
     finally:
-        instance._batch_timer.cancel()
+        if instance._batch_timer:
+            instance._batch_timer.cancel()
 
     assert len(instance._pending_proofs) == 1
 

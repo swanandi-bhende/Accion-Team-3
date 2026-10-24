@@ -1,0 +1,24 @@
+{
+  "ezkl_version": "23.0.5",
+  "width": 256,
+  "parameters": 66820,
+  "weight_bytes_float32": 267280,
+  "logrows": 17,
+  "verified": true,
+  "timings_seconds": {
+    "gen_settings": 0.05123295800876804,
+    "compile_circuit": 0.01587624999228865,
+    "gen_srs": 13.955739333003294,
+    "setup": 11.682514832995366,
+    "gen_witness": 0.10591079099685885,
+    "prove": 12.88905800000066,
+    "verify": 0.07655024999985471
+  },
+  "artifact_sizes_bytes": {
+    "proof.json": 55580,
+    "pk.key": 553912075,
+    "vk.key": 263431,
+    "kzg.srs": 16777476
+  },
+  "peak_memory_mb": 1131.3
+}

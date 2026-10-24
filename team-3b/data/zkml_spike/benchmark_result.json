@@ -1,0 +1,117 @@
+{
+  "toolchain": "ezkl",
+  "benchmarks": [
+    {
+      "toolchain": "ezkl",
+      "ezkl_version": "23.0.5",
+      "architecture": "linear",
+      "model": "tiny linear ONNX model",
+      "verified": true,
+      "timings_seconds": {
+        "gen_settings": 0.0027908329939236864,
+        "compile_circuit": 0.0007208329916466027,
+        "gen_srs": 10.04174695799884,
+        "setup": 6.050668875002884,
+        "gen_witness": 0.0275485410093097,
+        "prove": 9.065201125005842,
+        "verify": 0.06473937499686144
+      },
+      "artifact_sizes_bytes": {
+        "tiny_linear.onnx": 175,
+        "compiled.onnx": 1732,
+        "settings.json": 1317,
+        "witness.json": 774,
+        "kzg.srs": 16777476,
+        "vk.key": 263431,
+        "pk.key": 553912075,
+        "proof.json": 17666
+      },
+      "output_directory": "data/zkml_spike/linear",
+      "baseline": {"prove_seconds": 9.065201125005842, "proof_size_bytes": 17666}
+    },
+    {
+      "toolchain": "ezkl",
+      "ezkl_version": "23.0.5",
+      "architecture": "mlp",
+      "model": "tiny mlp ONNX model",
+      "verified": true,
+      "timings_seconds": {
+        "gen_settings": 0.006538125002407469,
+        "compile_circuit": 0.001288790997932665,
+        "gen_srs": 12.849159749996033,
+        "setup": 5.950020584001322,
+        "gen_witness": 0.029277124995132908,
+        "prove": 9.361619000002975,
+        "verify": 0.06857470900285989
+      },
+      "artifact_sizes_bytes": {
+        "tiny_mlp.onnx": 314,
+        "compiled.onnx": 2714,
+        "settings.json": 1454,
+        "witness.json": 772,
+        "kzg.srs": 16777476,
+        "vk.key": 263431,
+        "pk.key": 553912075,
+        "proof.json": 17612
+      },
+      "output_directory": "data/zkml_spike/mlp",
+      "baseline": {"prove_seconds": 9.361619000002975, "proof_size_bytes": 17612}
+    },
+    {
+      "toolchain": "ezkl",
+      "ezkl_version": "23.0.5",
+      "architecture": "cnn",
+      "model": "tiny cnn ONNX model",
+      "verified": true,
+      "timings_seconds": {
+        "gen_settings": 0.00901308401080314,
+        "compile_circuit": 0.0023425420076819137,
+        "gen_srs": 13.05710358399665,
+        "setup": 8.956499541003723,
+        "gen_witness": 0.035349291007150896,
+        "prove": 9.999955249993945,
+        "verify": 0.06031145800079685
+      },
+      "artifact_sizes_bytes": {
+        "tiny_cnn.onnx": 479,
+        "compiled.onnx": 3723,
+        "settings.json": 1570,
+        "witness.json": 2848,
+        "kzg.srs": 16777476,
+        "vk.key": 263431,
+        "pk.key": 553912075,
+        "proof.json": 19835
+      },
+      "output_directory": "data/zkml_spike/cnn",
+      "baseline": {"prove_seconds": 9.999955249993945, "proof_size_bytes": 19835}
+    },
+    {
+      "toolchain": "ezkl",
+      "ezkl_version": "23.0.5",
+      "architecture": "transformer_small",
+      "model": "tiny transformer_small ONNX model",
+      "verified": true,
+      "timings_seconds": {
+        "gen_settings": 0.008078708007815294,
+        "compile_circuit": 0.0007760829903418198,
+        "gen_srs": 13.347898249994614,
+        "setup": 22.917369250004413,
+        "gen_witness": 0.11639679200015962,
+        "prove": 37.01381654200668,
+        "verify": 0.1683594579953933
+      },
+      "artifact_sizes_bytes": {
+        "tiny_transformer_small.onnx": 294,
+        "compiled.onnx": 2818,
+        "settings.json": 1952,
+        "witness.json": 1529,
+        "kzg.srs": 16777476,
+        "vk.key": 838855,
+        "pk.key": 2240598451,
+        "proof.json": 42623
+      },
+      "output_directory": "data/zkml_spike/transformer_small",
+      "baseline": {"prove_seconds": 37.01381654200668, "proof_size_bytes": 42623}
+    }
+  ]
+}

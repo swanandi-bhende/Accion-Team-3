@@ -1,4 +1,4 @@
-"""InferenceRequest against the payload documented in docs/INTEGRATION_CONTRACTS.md."""
+"""InferenceRequest against the payload documented in docs/INTEGRATION.md."""
 
 import base64
 

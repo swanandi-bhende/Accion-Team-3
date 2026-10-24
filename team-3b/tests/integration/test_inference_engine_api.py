@@ -13,7 +13,6 @@ from eth_account.signers.local import LocalAccount
 from httpx import ASGITransport, AsyncClient
 
 os.environ["TEE_MODE"] = "sgx"
-os.environ["TEE_SEALED_KEY_PATH"] = "./data/sealed_key.bin"
 os.environ["REDIS_URL"] = "redis://localhost:6379"
 os.environ["MODEL_STORAGE_BACKEND"] = "ipfs"
 os.environ["MODEL_STORAGE_URL"] = "http://localhost:5001"

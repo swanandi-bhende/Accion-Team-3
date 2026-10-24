@@ -9,9 +9,14 @@ import pytest
 
 from common.exceptions import IntegrityCheckFailedError, StorageUnavailableError
 from common.interfaces import StorageBackend
-from common.model_registry import FAILED_UPLOAD_KEY, ModelRegistry
+from common.model_registry import FAILED_UPLOAD_KEY, UPLOAD_QUEUE_KEY, ModelRegistry
 from common.sealing import seal
 from tests.property.test_model_registry_prop import MockStorageBackend
+
+
+async def queued_uploads(registry: ModelRegistry) -> int:
+    """How many uploads are still queued in Redis, waiting for storage."""
+    return int(await cast(Awaitable[int], registry.redis.llen(UPLOAD_QUEUE_KEY)))
 
 
 class FailingStorageBackend(StorageBackend):
@@ -107,7 +112,7 @@ async def test_upload_waits_out_an_outage_with_no_attempt_cap(
 
     assert cid == "QmSuccess"
     assert storage.attempts == 13
-    assert await registry.pending_upload_count() == 0
+    assert await queued_uploads(registry) == 0
     assert list(tmp_path.iterdir()) == []
 
 
@@ -136,10 +141,10 @@ async def test_queued_upload_survives_a_restart(redis_client: fakeredis.FakeRedi
     first.UPLOAD_BACKOFF_BASE = 0.001
     task = asyncio.create_task(first.upload_model("queued_model", b"model-bytes", architecture="linear"))
     for _ in range(500):
-        if await first.pending_upload_count() == 1:
+        if await queued_uploads(first) == 1:
             break
         await asyncio.sleep(0.005)
-    assert await first.pending_upload_count() == 1
+    assert await queued_uploads(first) == 1
 
     task.cancel()  # the process dies while storage is still down
     with pytest.raises(asyncio.CancelledError):
@@ -153,7 +158,7 @@ async def test_queued_upload_survives_a_restart(redis_client: fakeredis.FakeRedi
     assert cids == [entry.cid]
     assert entry.architecture == "linear"
     assert entry.hash == hashlib.sha256(b"model-bytes").hexdigest()
-    assert await restarted.pending_upload_count() == 0
+    assert await queued_uploads(restarted) == 0
     assert list(tmp_path.iterdir()) == []
 
 
@@ -172,7 +177,7 @@ async def test_integrity_failure_moves_the_upload_to_the_failed_list(
 
     with pytest.raises(IntegrityCheckFailedError):
         await registry.upload_model("tampered", b"real-model")
-    assert await registry.pending_upload_count() == 0
+    assert await queued_uploads(registry) == 0
     assert await cast(Awaitable[int], redis_client.llen(FAILED_UPLOAD_KEY)) == 1
 
 

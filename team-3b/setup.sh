@@ -1,48 +1,30 @@
 #!/usr/bin/env bash
-set -e
+# Set up the project: a virtual environment, dependencies, a .env file, and Redis.
+set -euo pipefail
 
 echo "=> Checking prerequisites..."
-if ! command -v python3 &> /dev/null; then
-    echo "Error: python3 is required but not installed."
-    exit 1
-fi
-
-if ! command -v docker &> /dev/null; then
-    echo "Error: docker is required but not installed."
-    exit 1
-fi
-
-echo "=> Creating directories..."
-mkdir -p logs data tests/unit
+python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || { echo "Error: Python 3.11 or newer is required."; exit 1; }
+docker compose version > /dev/null 2>&1 || { echo "Error: Docker with Compose v2 ('docker compose') is required."; exit 1; }
 
 echo "=> Setting up virtual environment..."
 python3 -m venv venv
 source venv/bin/activate
 
 echo "=> Installing dependencies..."
-pip install -r requirements/base.txt
-pip install -r requirements/fl.txt
-pip install -r requirements/dev.txt
+pip install -r requirements/base.txt -r requirements/fl.txt -r requirements/dev.txt
+# Editable install of the packages under src/, so scripts can import them from anywhere.
+pip install -e .
 
 echo "=> Configuring environment..."
 if [ ! -f .env ]; then
     cp .env.example .env
-    echo "Created .env from .env.example. Please review and fill in required values."
+    echo "Created .env from .env.example. Review it and fill in the REAL values."
 fi
 
-echo "=> Starting Redis via Docker Compose (if configured)..."
-# Check if docker-compose.yml exists yet, if not warn
-if [ -f docker-compose.yml ]; then
-    docker-compose up -d redis
-else
-    echo "Warning: docker-compose.yml not found yet, skipping Redis startup."
-fi
+echo "=> Starting Redis..."
+docker compose up -d redis
 
-echo "=> Running sanity check tests..."
-pytest tests/unit/ --tb=short || echo "Warning: Tests failed or no tests found."
-
-echo "=> Setup complete!"
-echo "Next steps:"
-echo "1. Activate environment: source venv/bin/activate"
-echo "2. Edit .env with your credentials"
-echo "3. Run 'docker-compose up' to start all services (once available)"
+echo "=> Setup complete. Next:"
+echo "   source venv/bin/activate"
+echo "   docker compose up -d        # all services"
+echo "   pytest tests/unit tests/property"
