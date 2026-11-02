@@ -8,6 +8,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from common.model_registry import model_id_for_description_hash
 from common.models import InferenceRequest
 
 logger = logging.getLogger(__name__)
@@ -64,13 +65,17 @@ class EventListener:
         confirmations: int = 0,
     ):
         if trigger not in TRIGGERS:
-            raise ValueError(f"unknown execution trigger {trigger!r}; expected one of {TRIGGERS}")
+            raise ValueError(
+                f"unknown execution trigger {trigger!r}; expected one of {TRIGGERS}"
+            )
         self.web3 = web3
         self.task_manager = task_manager
         self.escrow = escrow
         self.redis = redis_client
         self.inference_engine = inference_engine
-        self.dispatch = dispatch or (self._dispatch_to_engine if inference_engine is not None else None)
+        self.dispatch = dispatch or (
+            self._dispatch_to_engine if inference_engine is not None else None
+        )
         self.clock = clock
         self.sleep = sleep
         self.trigger = trigger
@@ -131,7 +136,10 @@ class EventListener:
         if task is None:
             await self.redis.delete(f"{self.TASK_STATE_PREFIX}{task_id}")
             return
-        await self.redis.set(f"{self.TASK_STATE_PREFIX}{task_id}", json.dumps(task, default=self._json_value))
+        await self.redis.set(
+            f"{self.TASK_STATE_PREFIX}{task_id}",
+            json.dumps(task, default=self._json_value),
+        )
 
     @staticmethod
     def _json_value(value: Any) -> Any:
@@ -144,7 +152,9 @@ class EventListener:
         if isinstance(value, dict) and set(value) == {"__bytes__"}:
             return bytes.fromhex(value["__bytes__"])
         if isinstance(value, dict):
-            return {key: EventListener._restore_value(item) for key, item in value.items()}
+            return {
+                key: EventListener._restore_value(item) for key, item in value.items()
+            }
         if isinstance(value, list):
             return [EventListener._restore_value(item) for item in value]
         return value
@@ -211,19 +221,31 @@ class EventListener:
         await self._persist_task_state(task_id)
         await self._try_dispatch(task_id)
 
-    async def _process_events(self, from_block: int, to_block: int | str = "latest") -> None:
+    async def _process_events(
+        self, from_block: int, to_block: int | str = "latest"
+    ) -> None:
         await self._restore_task_states()
         # One eth_getLogs per event type. A filter would stay installed on the node after
         # every poll, which is what leaked thousands of filters on the local chain.
-        created_events = self.task_manager.events.TaskCreated.get_logs(from_block=from_block, to_block=to_block)
-        funded_events = self.escrow.events.TaskFunded.get_logs(from_block=from_block, to_block=to_block)
+        created_events = self.task_manager.events.TaskCreated.get_logs(
+            from_block=from_block, to_block=to_block
+        )
+        funded_events = self.escrow.events.TaskFunded.get_logs(
+            from_block=from_block, to_block=to_block
+        )
         events = [(self._block_number(event), 0, event) for event in created_events]
         events.extend((self._block_number(event), 1, event) for event in funded_events)
         if self.trigger == BID_ACCEPTED:
-            accepted_events = self.task_manager.events.BidAccepted.get_logs(from_block=from_block, to_block=to_block)
-            events.extend((self._block_number(event), 2, event) for event in accepted_events)
+            accepted_events = self.task_manager.events.BidAccepted.get_logs(
+                from_block=from_block, to_block=to_block
+            )
+            events.extend(
+                (self._block_number(event), 2, event) for event in accepted_events
+            )
         handlers = (self._process_created, self._process_funded, self._process_accepted)
-        for block_number, event_type, event in sorted(events, key=lambda item: (item[0], item[1])):
+        for block_number, event_type, event in sorted(
+            events, key=lambda item: (item[0], item[1])
+        ):
             await handlers[event_type](event)
             await self._persist_block_number(block_number)
         # Retry tasks whose earlier dispatch failed. Without a dispatch target there is nothing to retry.
@@ -270,29 +292,47 @@ class EventListener:
         self._pending_since.clear()
 
     def _ready(self, task: dict[str, Any]) -> bool:
-        required = ["created", "funded"] + (["accepted"] if self.trigger == BID_ACCEPTED else [])
+        required = ["created", "funded"] + (
+            ["accepted"] if self.trigger == BID_ACCEPTED else []
+        )
         return all(key in task for key in required)
 
     def _confirmed(self, task: dict[str, Any]) -> bool:
         """True once the newest event of the task has ``confirmations`` blocks on top of it."""
         if self.confirmations <= 0:
             return True
-        newest = max(int(task[key]["block_number"]) for key in ("created", "funded", "accepted") if key in task)
+        newest = max(
+            int(task[key]["block_number"])
+            for key in ("created", "funded", "accepted")
+            if key in task
+        )
         return int(self.web3.eth.block_number) - newest >= self.confirmations
 
     async def _try_dispatch(self, task_id: str) -> bool:
         task = self._task_events.get(task_id)
-        if not task or task.get("dispatched") or task.get("attempted") or not self._ready(task):
+        if (
+            not task
+            or task.get("dispatched")
+            or task.get("attempted")
+            or not self._ready(task)
+        ):
             return False
         if not self._confirmed(task):
             return False
         if self._expired(task["created"]["deadline"]):
-            logger.warning("Skipping expired task_id=%s deadline=%s", task_id, task["created"]["deadline"])
+            logger.warning(
+                "Skipping expired task_id=%s deadline=%s",
+                task_id,
+                task["created"]["deadline"],
+            )
             self._task_events.pop(task_id, None)
             self._pending_since.pop(task_id, None)
             return False
         if self.dispatch is None:
-            logger.info("TASK_READY task_id=%s no dispatch target configured; not dispatched", task_id)
+            logger.info(
+                "TASK_READY task_id=%s no dispatch target configured; not dispatched",
+                task_id,
+            )
             return False
         task["attempted"] = True
         await self._persist_task_state(task_id)
@@ -309,12 +349,20 @@ class EventListener:
             return False
         task["dispatched"] = True
         await self._persist_task_state(task_id)
-        logger.info("Dispatched task_id=%s block_number=%s", task_id, task["created"]["block_number"])
+        logger.info(
+            "Dispatched task_id=%s block_number=%s",
+            task_id,
+            task["created"]["block_number"],
+        )
         return True
 
     async def _dispatch_to_engine(self, task: dict[str, Any]) -> Any:
+        model_id = await model_id_for_description_hash(
+            self.redis, task["created"]["description_hash"]
+        )
         request = InferenceRequest(
-            model_id=task["created"]["description_hash"].hex(),
+            # An unregistered description hash gives an empty id, which the engine reports as ModelNotFound.
+            model_id=model_id or "",
             input_data=b"",
             task_id=task["created"]["task_id"],
         )
@@ -327,14 +375,22 @@ class EventListener:
         Removes them from memory and from Redis. Returns the number removed.
         """
         cutoff = self.clock() - self.PENDING_TTL_SECONDS
-        abandoned = [task_id for task_id, started in self._pending_since.items() if started < cutoff]
+        abandoned = [
+            task_id
+            for task_id, started in self._pending_since.items()
+            if started < cutoff
+        ]
         for task_id in abandoned:
             self._pending_since.pop(task_id, None)
             self._task_events.pop(task_id, None)
             await self._persist_task_state(task_id)
         return len(abandoned)
 
-    async def _reconnect_with_backoff(self, connect: Callable[[], Awaitable[Any] | Any], max_attempts: int | None = None) -> Any:
+    async def _reconnect_with_backoff(
+        self,
+        connect: Callable[[], Awaitable[Any] | Any],
+        max_attempts: int | None = None,
+    ) -> Any:
         delay = self.RECONNECT_BASE
         attempts = 0
         while max_attempts is None or attempts < max_attempts:

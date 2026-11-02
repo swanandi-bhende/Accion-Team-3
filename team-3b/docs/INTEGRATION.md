@@ -171,8 +171,8 @@ Team A answered the asks. Recorded here, with the step-one changes:
   `submitProofs`. Our call is still to be decided (step 4).
 - **Bids:** create, place bid, fund, then `acceptBid` by the creator. Once accepted,
   `taskWorker` returns the bidder, and our auth check passes.
-- **Descriptions:** `descriptionHash = keccak256(bytes(model_id))`, agreed with Team A. Our model
-  lookup is still on the old rule (step 2).
+- **Descriptions:** `descriptionHash = keccak256(bytes(model_id))`, agreed with Team A. The registry
+  indexes each model under this hash, and tasks resolve through that index.
 - **Rejections:** `ProofRejected` carries a `uint8` code: 1 TaskNotFound, 2 InvalidStatus,
   3 ProofAlreadySubmitted, 4 InvalidPayload. Codes 1–3 are final. Code 4 and transient errors can be
   resubmitted (step 3).

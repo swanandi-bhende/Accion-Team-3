@@ -16,10 +16,16 @@ import fakeredis.aioredis as fakeredis
 import pytest
 import redis.asyncio as redis
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from web3 import Web3
 
 from common.constants import DEVELOPMENT_PROOF_BACKEND
 from common.interfaces import StorageBackend
-from common.model_registry import ModelRegistry
+from common.model_registry import (
+    DESCRIPTION_HASH_KEY,
+    ModelRegistry,
+    description_hash,
+    model_id_for_description_hash,
+)
 from common.models import (
     AttestationReport,
     ExecutionReceipt,
@@ -45,15 +51,16 @@ SEALED_KEY = b"mock_sealed_key_0123456789abcdef"
 
 MODEL_BINARY = mlp_model_bytes()
 
-SLOW_MODEL = "dd" * 32
+SLOW_MODEL = "slow-model"
 
-FAST_MODEL = "ee" * 32
+FAST_MODEL = "fast-model"
 
 
 def _task(task_id: str, model_id: str) -> dict[str, Any]:
     """Exactly the payload shape EventListener dispatches (see listener._try_dispatch)."""
     return {
-        "created": {"task_id": task_id, "description_hash": bytes.fromhex(model_id)},
+        # Team A's rule: the task's descriptionHash is keccak256 of the model id.
+        "created": {"task_id": task_id, "description_hash": Web3.keccak(text=model_id)},
         "funded": {"task_id": task_id, "funded_amount": 1},
         "dispatched": True,
     }
@@ -167,6 +174,17 @@ class RecordingSubmitter:
         return "0x" + "de" * 32
 
 
+_KNOWN_MODELS = {
+    bytes(Web3.keccak(text=name)): name
+    for name in (SLOW_MODEL, FAST_MODEL, "broken-model")
+}
+
+
+async def _known_model(task_hash: bytes) -> str | None:
+    """Resolve the test models' description hashes without a registry."""
+    return _KNOWN_MODELS.get(bytes(task_hash))
+
+
 def _fake_pipeline(
     engine: DelayedEngine | InferenceEngine,
     prover: FakeProver | ZkMLProver | None = None,
@@ -183,6 +201,7 @@ def _fake_pipeline(
         submitter or RecordingSubmitter(),
         max_in_flight=max_in_flight,
         queue_maxsize=queue_maxsize,
+        model_resolver=_known_model,
     )
 
 
@@ -254,7 +273,7 @@ async def test_tee_integrity_failure_drops_that_task_only(
 
     nonce = os.urandom(12)
     sealed_blob = nonce + AESGCM(SEALED_KEY).encrypt(nonce, MODEL_BINARY, None)
-    broken_model_id = "bb" * 32
+    broken_model_id = "broken-model"
     cid = await memory_storage.upload(sealed_blob)
     key = f"model:{broken_model_id}:v1"
     await redis_client.hset(
@@ -267,6 +286,9 @@ async def test_tee_integrity_failure_drops_that_task_only(
         },
     )
     await redis_client.set(f"model:{broken_model_id}:latest", key)
+    await redis_client.set(
+        DESCRIPTION_HASH_KEY.format(description_hash(broken_model_id)), broken_model_id
+    )
     await registry.upload_model(FAST_MODEL, MODEL_BINARY, architecture="mlp")
 
     tee = TEERuntime("sgx")
@@ -281,6 +303,9 @@ async def test_tee_integrity_failure_drops_that_task_only(
         FakeProver(),
         RecordingSubmitter(),
         max_in_flight=2,
+        model_resolver=lambda task_hash: model_id_for_description_hash(
+            redis_client, task_hash
+        ),
     )
 
     await pipeline.enqueue(_task("t-broken", broken_model_id))
@@ -353,13 +378,27 @@ async def test_unauthenticated_model_blob_is_dropped_as_an_integrity_failure(
         },
     )
     await redis_client.set(f"model:{tampered_model_id}:latest", key)
+    await redis_client.set(
+        DESCRIPTION_HASH_KEY.format(description_hash(tampered_model_id)),
+        tampered_model_id,
+    )
 
     tee = TEERuntime("sgx")
     tee.initialize()
     engine = InferenceEngine(
         registry, tee, redis_client, timeout_s=30.0, sealed_key=SEALED_KEY
     )
-    pipeline = _fake_pipeline(engine, max_in_flight=1)
+    pipeline = Pipeline(
+        SimpleNamespace(),
+        engine,
+        tee,
+        FakeProver(),
+        RecordingSubmitter(),
+        max_in_flight=1,
+        model_resolver=lambda task_hash: model_id_for_description_hash(
+            redis_client, task_hash
+        ),
+    )
 
     await pipeline.enqueue(_task("t-tampered", tampered_model_id))
     records = await pipeline.drain()

@@ -7,9 +7,10 @@ import uuid
 from collections.abc import Awaitable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from redis.asyncio import Redis
+from web3 import Web3
 
 from common.exceptions import IntegrityCheckFailedError, StorageUnavailableError
 from common.interfaces import StorageBackend
@@ -19,6 +20,32 @@ logger = logging.getLogger(__name__)
 
 UPLOAD_QUEUE_KEY = "model_registry:upload_queue"
 FAILED_UPLOAD_KEY = "model_registry:upload_failed"
+# model id -> description hash index: each registered model is found from its on-chain task.
+DESCRIPTION_HASH_KEY = "model:descriptionhash:{}"
+
+
+def description_hash(model_id: str) -> str:
+    """The on-chain ``descriptionHash`` of a model: keccak256 of the id's UTF-8 bytes.
+
+    This is Team A's rule. A task created for a model carries this value.
+    """
+    return "0x" + Web3.keccak(text=model_id).hex().removeprefix("0x")
+
+
+async def model_id_for_description_hash(
+    redis_client: Any, task_hash: bytes | str
+) -> str | None:
+    """The registry id of the model a task's ``descriptionHash`` names, or None if none is registered."""
+    text = task_hash.hex() if isinstance(task_hash, bytes) else task_hash
+    key = "0x" + text.lower().removeprefix("0x")
+    value = await cast(
+        Awaitable[bytes | None], redis_client.get(DESCRIPTION_HASH_KEY.format(key))
+    )
+    if value is None:
+        return None
+    return value.decode() if isinstance(value, bytes) else value
+
+
 DEFAULT_SPOOL_DIR = Path(__file__).resolve().parents[2] / "data" / "upload_spool"
 
 
@@ -66,7 +93,9 @@ class ModelRegistry:
             target_key = await self.redis.get(latest_key)
             if not target_key:
                 return None
-            target_key = target_key.decode() if isinstance(target_key, bytes) else target_key
+            target_key = (
+                target_key.decode() if isinstance(target_key, bytes) else target_key
+            )
         else:
             target_key = f"model:{model_id}:v{version}"
 
@@ -76,7 +105,12 @@ class ModelRegistry:
         if not data:
             return None
 
-        decoded = {k.decode('utf-8') if isinstance(k, bytes) else k: v.decode('utf-8') if isinstance(v, bytes) else v for k, v in data.items()}
+        decoded = {
+            k.decode("utf-8") if isinstance(k, bytes) else k: v.decode("utf-8")
+            if isinstance(v, bytes)
+            else v
+            for k, v in data.items()
+        }
 
         return ModelEntry(
             model_id=model_id,
@@ -95,7 +129,9 @@ class ModelRegistry:
         model_id = await self.redis.get(f"model:cid:{cid}")
         if not model_id:
             return None
-        entry = await self.get(model_id.decode() if isinstance(model_id, bytes) else model_id)
+        entry = await self.get(
+            model_id.decode() if isinstance(model_id, bytes) else model_id
+        )
         if entry is None or entry.cid != cid:
             return None
         return entry
@@ -131,7 +167,9 @@ class ModelRegistry:
         except StorageUnavailableError:
             raise
         except Exception as e:
-            raise IntegrityCheckFailedError(f"retrieve_error_{cid}", "expected_binary") from e
+            raise IntegrityCheckFailedError(
+                f"retrieve_error_{cid}", "expected_binary"
+            ) from e
 
         computed_hash = hashlib.sha256(resolved_binary).hexdigest()
         expected_hash = hashlib.sha256(model_binary).hexdigest()
@@ -155,6 +193,7 @@ class ModelRegistry:
         pipeline.hset(key, mapping=metadata)
         pipeline.set(latest_key, key)
         pipeline.set(f"model:cid:{cid}", model_id)
+        pipeline.set(DESCRIPTION_HASH_KEY.format(description_hash(model_id)), model_id)
         await pipeline.execute()
 
     async def upload_model(
@@ -178,7 +217,9 @@ class ModelRegistry:
     async def resume_uploads(self) -> list[str]:
         """Finish every queued upload, for example after a restart. Returns the CIDs."""
         cids = []
-        queued = await cast(Awaitable[list[bytes]], self.redis.lrange(UPLOAD_QUEUE_KEY, 0, -1))
+        queued = await cast(
+            Awaitable[list[bytes]], self.redis.lrange(UPLOAD_QUEUE_KEY, 0, -1)
+        )
         for raw in queued:
             pending = PendingUpload(**json.loads(raw))
             binary = Path(pending.spool_path).read_bytes()
@@ -245,11 +286,21 @@ class ModelRegistry:
             except IntegrityCheckFailedError:
                 # The CID resolves to other bytes. Retrying cannot fix that, so the
                 # upload moves to the failed list and the spool file is kept for inspection.
-                await cast(Awaitable[int], self.redis.lrem(UPLOAD_QUEUE_KEY, 1, _encode(pending)))
-                await cast(Awaitable[int], self.redis.lpush(FAILED_UPLOAD_KEY, _encode(pending)))
-                logger.error("MODEL_UPLOAD_INTEGRITY_FAILURE model_id=%s", pending.model_id)
+                await cast(
+                    Awaitable[int],
+                    self.redis.lrem(UPLOAD_QUEUE_KEY, 1, _encode(pending)),
+                )
+                await cast(
+                    Awaitable[int],
+                    self.redis.lpush(FAILED_UPLOAD_KEY, _encode(pending)),
+                )
+                logger.error(
+                    "MODEL_UPLOAD_INTEGRITY_FAILURE model_id=%s", pending.model_id
+                )
                 raise
-            await cast(Awaitable[int], self.redis.lrem(UPLOAD_QUEUE_KEY, 1, _encode(pending)))
+            await cast(
+                Awaitable[int], self.redis.lrem(UPLOAD_QUEUE_KEY, 1, _encode(pending))
+            )
             Path(pending.spool_path).unlink(missing_ok=True)
             return cid
 

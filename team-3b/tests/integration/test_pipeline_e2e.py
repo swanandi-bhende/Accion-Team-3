@@ -129,8 +129,8 @@ async def test_full_pipeline_settles_and_verifies_one_task(
     web3, redis_client = wired["web3"], wired["redis"]
     tee, interface = wired["tee"], wired["interface"]
 
-    description_hash = web3.keccak(text="pipeline-e2e-model")
-    model_id = description_hash.hex()
+    model_id = "pipeline-e2e-model"
+    description_hash = web3.keccak(text=model_id)
     await registry.upload_model(model_id, MODEL_BINARY, architecture=MODEL_ARCHITECTURE)
 
     task_id, created_receipt, funded_receipt = create_funded_task(description_hash)
@@ -236,7 +236,7 @@ async def test_dispatch_to_confirmation_latency_over_a_small_batch(
     web3 = wired["web3"]
     description_hash = web3.keccak(text="pipeline-latency-model")
     await registry.upload_model(
-        description_hash.hex(), MODEL_BINARY, architecture=MODEL_ARCHITECTURE
+        "pipeline-latency-model", MODEL_BINARY, architecture=MODEL_ARCHITECTURE
     )
 
     for _ in range(BATCH_SIZE):

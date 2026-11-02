@@ -26,8 +26,9 @@ import json
 import logging
 import signal
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import numpy as np
@@ -48,7 +49,7 @@ from common.exceptions import (
     TimeoutExceededError,
     UnsupportedArchitectureError,
 )
-from common.model_registry import ModelRegistry
+from common.model_registry import ModelRegistry, model_id_for_description_hash
 from common.models import ExecutionReceipt, InferenceRequest, VerificationRequest
 from common.storage.factory import build_storage_backend
 from common.tensors import encode_tensor
@@ -155,6 +156,7 @@ class Pipeline:
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], Any] = asyncio.sleep,
         queue_maxsize: int | None = None,
+        model_resolver: Callable[[bytes], Awaitable[str | None]] | None = None,
     ):
         if max_in_flight < 1:
             raise ValueError("max_in_flight must be >= 1")
@@ -166,6 +168,11 @@ class Pipeline:
         self.verification = verification
         self.max_in_flight = max_in_flight
         self.input_provider = input_provider or self._default_input
+        # Maps a task's descriptionHash to the registry id of its model. By default the
+        # listener's Redis holds the model index, so the pipeline reads it from there.
+        if model_resolver is None and getattr(listener, "redis", None) is not None:
+            model_resolver = partial(model_id_for_description_hash, listener.redis)
+        self.model_resolver = model_resolver
         # Settlement normally waits out the submitter's batch window. Tests that
         # assert a confirmed transaction turn this on to force a flush per task.
         self.flush_batches = flush_batches
@@ -205,7 +212,9 @@ class Pipeline:
             )
         await self._queue.put(task)
         logger.info(
-            "PIPELINE_ENQUEUED task_id=%s queue_depth=%s", self._task_id(task), self._queue.qsize()
+            "PIPELINE_ENQUEUED task_id=%s queue_depth=%s",
+            self._task_id(task),
+            self._queue.qsize(),
         )
 
     async def start(self, poll_interval: float = 1.0) -> None:
@@ -255,7 +264,9 @@ class Pipeline:
         """
         pending = []
         while not self._queue.empty():
-            pending.append(asyncio.create_task(self._drain_one(self._queue.get_nowait())))
+            pending.append(
+                asyncio.create_task(self._drain_one(self._queue.get_nowait()))
+            )
         if not pending:
             return []
         return list(await asyncio.gather(*pending))
@@ -283,10 +294,16 @@ class Pipeline:
         """Read the id from the listener's payload, which nests it under ``created``."""
         return str(task["created"]["task_id"])
 
-    def _build_request(self, task: dict[str, Any]) -> InferenceRequest:
+    async def _build_request(self, task: dict[str, Any]) -> InferenceRequest:
         created = task["created"]
+        model_id = (
+            await self.model_resolver(created["description_hash"])
+            if self.model_resolver
+            else None
+        )
         return InferenceRequest(
-            model_id=created["description_hash"].hex(),
+            # An unregistered description hash gives an empty id, which the engine reports as ModelNotFound.
+            model_id=model_id or "",
             input_data=self.input_provider(task),
             task_id=self._task_id(task),
         )
@@ -294,11 +311,13 @@ class Pipeline:
     async def run_task(self, task: dict[str, Any]) -> TaskRecord:
         """Walk one task through every stage, recording its outcome either way."""
         task_id = self._task_id(task)
-        record = TaskRecord(task_id=task_id, outcome=OUTCOME_SUBMITTED, started_at=self.clock())
+        record = TaskRecord(
+            task_id=task_id, outcome=OUTCOME_SUBMITTED, started_at=self.clock()
+        )
         execution_id: str | None = None
         self._in_flight += 1
         try:
-            request = self._build_request(task)
+            request = await self._build_request(task)
             record.model_id = request.model_id
             receipt, inference_s = await self._run_inference(request, task_id)
             record.inference_s = inference_s
@@ -309,7 +328,11 @@ class Pipeline:
             )
             record.proof_s = proof_s
             record.proof_hash = hashlib.sha256(proof.proof_bytes).hexdigest()
-            record.submit_s, record.confirmation_s, record.tx_hash = await self._run_submission(
+            (
+                record.submit_s,
+                record.confirmation_s,
+                record.tx_hash,
+            ) = await self._run_submission(
                 task_id, execution_id, attestation, proof, receipt.model_cid
             )
             record.verified = await self._run_verification(proof, task_id, execution_id)
@@ -322,7 +345,9 @@ class Pipeline:
             record.outcome = OUTCOME_DROPPED_INFERENCE_ERROR
             record.detail = f"{type(error).__name__}: {error}"
             logger.exception(
-                "PIPELINE_UNEXPECTED_ERROR task_id=%s execution_id=%s", task_id, execution_id
+                "PIPELINE_UNEXPECTED_ERROR task_id=%s execution_id=%s",
+                task_id,
+                execution_id,
             )
         finally:
             self._in_flight -= 1
@@ -332,7 +357,9 @@ class Pipeline:
 
     def _finalize(self, record: TaskRecord) -> None:
         self.records.append(record)
-        self._outcome_counts[record.outcome] = self._outcome_counts.get(record.outcome, 0) + 1
+        self._outcome_counts[record.outcome] = (
+            self._outcome_counts.get(record.outcome, 0) + 1
+        )
         logger.info(
             "PIPELINE_TASK_COMPLETE task_id=%s execution_id=%s outcome=%s inference_s=%s proof_s=%s total_s=%.3f",
             record.task_id,
@@ -369,7 +396,8 @@ class Pipeline:
                         else OUTCOME_DROPPED_INFERENCE_ERROR
                     )
                     raise TaskDropped(
-                        outcome, f"{type(error).__name__}: {error} (after {attempt} attempts)"
+                        outcome,
+                        f"{type(error).__name__}: {error} (after {attempt} attempts)",
                     ) from error
                 delay = self.RETRY_BACKOFF_BASE_S * (2 ** (attempt - 1))
                 logger.warning(
@@ -382,17 +410,27 @@ class Pipeline:
                 )
                 await self.sleep(delay)
             except ModelExecutionError as error:
-                raise TaskDropped(OUTCOME_DROPPED_INFERENCE_ERROR, str(error)) from error
+                raise TaskDropped(
+                    OUTCOME_DROPPED_INFERENCE_ERROR, str(error)
+                ) from error
             except IntegrityCheckFailedError as error:
-                raise TaskDropped(OUTCOME_DROPPED_INTEGRITY_FAILURE, str(error)) from error
+                raise TaskDropped(
+                    OUTCOME_DROPPED_INTEGRITY_FAILURE, str(error)
+                ) from error
             except ModelNotFoundError as error:
-                raise TaskDropped(OUTCOME_DROPPED_MODEL_NOT_FOUND, str(error)) from error
+                raise TaskDropped(
+                    OUTCOME_DROPPED_MODEL_NOT_FOUND, str(error)
+                ) from error
             except TimeoutExceededError as error:
                 # Retrying would only blow the task deadline again; drop it and
                 # keep the queue moving for every other task.
-                raise TaskDropped(OUTCOME_DROPPED_INFERENCE_TIMEOUT, str(error)) from error
+                raise TaskDropped(
+                    OUTCOME_DROPPED_INFERENCE_TIMEOUT, str(error)
+                ) from error
             except ValueError as error:
-                raise TaskDropped(OUTCOME_DROPPED_INFERENCE_ERROR, str(error)) from error
+                raise TaskDropped(
+                    OUTCOME_DROPPED_INFERENCE_ERROR, str(error)
+                ) from error
             else:
                 return receipt, self.clock() - started
 
@@ -402,17 +440,22 @@ class Pipeline:
         """Stage 3: TEE attestation, then the zkML proof over the receipt."""
         started = self.clock()
         try:
-            attestation = self.tee.generate_attestation(request.input_data, receipt.output)
+            attestation = self.tee.generate_attestation(
+                request.input_data, receipt.output
+            )
         except TEEUnavailableError as error:
             raise TaskDropped(OUTCOME_DROPPED_TEE_UNAVAILABLE, str(error)) from error
         try:
             proof = await self.prover.generate_proof(receipt, request.input_data)
         except TimeoutError as error:
             raise TaskDropped(
-                OUTCOME_DROPPED_PROOF_TIMEOUT, f"zkML proof exceeded its timeout: {error}"
+                OUTCOME_DROPPED_PROOF_TIMEOUT,
+                f"zkML proof exceeded its timeout: {error}",
             ) from error
         except UnsupportedArchitectureError as error:
-            raise TaskDropped(OUTCOME_DROPPED_UNSUPPORTED_ARCHITECTURE, str(error)) from error
+            raise TaskDropped(
+                OUTCOME_DROPPED_UNSUPPORTED_ARCHITECTURE, str(error)
+            ) from error
         except ProvingKeysUnavailableError as error:
             raise TaskDropped(OUTCOME_DROPPED_PROOF_KEYS_MISSING, str(error)) from error
         except ProofInconsistentError as error:
@@ -439,9 +482,13 @@ class Pipeline:
         """Stage 4: hand the proof to the batched on-chain submitter."""
         started = self.clock()
         try:
-            pending = await self.submitter.submit_proof(task_id, attestation, proof, model_cid)
+            pending = await self.submitter.submit_proof(
+                task_id, attestation, proof, model_cid
+            )
         except ProofNotSubmittableError as error:
-            raise TaskDropped(OUTCOME_DROPPED_PROOF_NOT_SUBMITTABLE, str(error)) from error
+            raise TaskDropped(
+                OUTCOME_DROPPED_PROOF_NOT_SUBMITTABLE, str(error)
+            ) from error
         except Exception as error:
             raise TaskDropped(
                 OUTCOME_DROPPED_SUBMISSION_FAILED, f"{type(error).__name__}: {error}"
@@ -484,7 +531,9 @@ class Pipeline:
             )
             return confirmation_s, tx_hash
 
-    async def _run_verification(self, proof: Any, task_id: str, execution_id: str) -> bool | None:
+    async def _run_verification(
+        self, proof: Any, task_id: str, execution_id: str
+    ) -> bool | None:
         """Stage 5: re-verify the settled proof through the public interface.
 
         A mismatch is logged loudly but does not un-submit a settled task; it is
@@ -542,13 +591,25 @@ class Pipeline:
             "outcomes": dict(self._outcome_counts),
             "total_s": _summarize([record.total_s for record in self.records]),
             "inference_s": _summarize(
-                [record.inference_s for record in self.records if record.inference_s is not None]
+                [
+                    record.inference_s
+                    for record in self.records
+                    if record.inference_s is not None
+                ]
             ),
             "proof_s": _summarize(
-                [record.proof_s for record in self.records if record.proof_s is not None]
+                [
+                    record.proof_s
+                    for record in self.records
+                    if record.proof_s is not None
+                ]
             ),
             "confirmation_s": _summarize(
-                [record.confirmation_s for record in self.records if record.confirmation_s is not None]
+                [
+                    record.confirmation_s
+                    for record in self.records
+                    if record.confirmation_s is not None
+                ]
             ),
         }
 
