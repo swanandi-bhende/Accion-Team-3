@@ -88,6 +88,9 @@ Gaps: a multi-host Flower SuperLink deployment has not been validated. There is 
 | 6.3 Anchoring record with the transaction hash | **Partly** | A log line (`PROOF_ANCHORED`). It is not an on-chain event. |
 | 6.4 Three retries, 10 s apart, then the dead-letter queue | **Met** | `MAX_RETRIES = 3`, `RETRY_INTERVAL = 10.0` |
 | 6.5 Alert on dead-lettered proofs | **Partly** | Logged, recorded in `proof_submitter:alerts`, and posted to `ALERT_WEBHOOK_URL` when set. **No channel is configured.** |
+| 6.6 Reason-aware rejections (Team A's codes 1–4) | **Met** | `src/proof_submitter/submitter.py`, `scripts/ops/replay_dlq.py`. Tests in `tests/unit/test_team_a_contract.py`. |
+| 6.7 Skip completed or settled tasks before submitting | **Met** | `_still_to_submit` reads `getTask`. Tested with fakes and against Team A's ABI. |
+| 6.8 Settle after an accepted proof (`SETTLE_AFTER_PROOF`) | **Partly** | Built and tested with fakes. Off by default. Not run on Galileo, and the payout is not shown in the job status. |
 
 ### 7. Model registry and storage
 
@@ -153,6 +156,8 @@ All measurements come from one machine. They are not production figures.
 - Federated learning uses simulated clients. There is no secure aggregation.
 - Chain tests run against a local node that replays Team A's bytecode. No test has placed a real
   bid on Galileo.
+- The 0G upload key is not funded yet. The faucet request needs a person to complete a CAPTCHA.
+- The Galileo runbook has not been run. It needs TEST tokens and a bidder wallet.
 
 ## Open decisions
 
@@ -162,17 +167,22 @@ All measurements come from one machine. They are not production figures.
 | Proof-size target (Property 7) | Spec owner | Option A (at most 64 KiB) proposed. Not accepted. |
 | Alert channel for dead letters | Us | Webhook built. No URL configured. |
 | Response carries `task_id` (DRIFT-012) | Team C | Open |
-| Model mapping (DRIFT-014) | Team A and Team C | Open. Proposal in [INTEGRATION.md](INTEGRATION.md). |
+| Model mapping (DRIFT-014) | Team A and Team C | Resolved 2026-11-02: `descriptionHash = keccak256(model_id)`. |
 | Input and output format (DRIFT-015) | Team C | Open |
-| Prover allow-list on Galileo (DRIFT-006) | Team A | Blocked. Our signer is not on it. |
-| Bids on tasks (DRIFT-011) | Team A | Blocked. Settlement cannot pay until someone bids. |
+| Prover allow-list on Galileo (DRIFT-006) | Team A | Resolved. `isProver` is true for our proof signer. |
+| Bids on tasks (DRIFT-011) | Team A | Resolved: the creator accepts the bid. A bidder wallet is still needed to run it. |
+| Settle after an accepted proof | Us | Built, off by default (`SETTLE_AFTER_PROOF`). |
+| TEST tokens for the creator wallet | Team A | To ask. Needed before any on-chain run. |
+| Release tag for pinned ABIs | Team A | To ask. Draft in [INTEGRATION.md](INTEGRATION.md). |
 
 ## Next steps
 
 1. Decide the trigger, and get the proof-size decision from the spec owner.
 2. Move the prover allow-list check into the pipeline, and retire the idle proof-submitter container.
 3. Give dead-letter alerts a channel, and add retries to the webhook.
-4. Close DRIFT-012, DRIFT-014 and DRIFT-015 with Team C.
+4. Close DRIFT-012 and DRIFT-015 with Team C. DRIFT-014 is resolved.
+4a. Run `scripts/ops/galileo_full_task.py --execute` once TEST tokens and a bidder wallet arrive, with
+    `SETTLE_AFTER_PROOF=true`. Then decide whether the flag becomes the default.
 5. Measure a real model at production size, or accept the EZKL limit in writing.
 6. Put a hardware TEE behind the enclave interface on a Linux SGX or SEV host.
 
@@ -188,3 +198,12 @@ Checkpoints reviewed so far, each with its tests:
 - **Close-out** (V1.17): items from the review list, including the round-timeout fix.
 
 Earlier review records are in git history.
+
+## Galileo state, 2026-11-02
+
+- Prover allow-list: our proof signer `0x28FB…` is allowed (`isProver` is true).
+- Proof signer gas: about 25.97 0G.
+- TEST balance of the proof signer: 0. The creator needs TEST before any run.
+- 0G upload key: separate from the proof signer, `0xCCF8…311D`. Unfunded until the faucet request
+  is completed.
+- Team A's contract ABIs are pinned in `team_a_assets/`. A release tag is requested.

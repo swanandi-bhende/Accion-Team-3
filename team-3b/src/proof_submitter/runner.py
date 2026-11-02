@@ -9,6 +9,7 @@ from web3 import Web3
 from common.config import get_settings
 from common.web3_checks import prover_allowlist_status, signer_address, verify_chain_id
 from event_listener.config import load_contract_abi
+from proof_submitter.settlement import build_settlement_contract
 from proof_submitter.submitter import ProofSubmitter
 
 
@@ -70,6 +71,7 @@ async def main() -> None:
         settings.proof_submitter_private_key,
         signer_address=signer,
         alert_webhook_url=settings.alert_webhook_url,
+        settlement_contract=build_settlement_contract(web3, settings),
     )
 
     shutdown = asyncio.Event()

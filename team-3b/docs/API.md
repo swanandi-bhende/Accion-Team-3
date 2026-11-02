@@ -130,3 +130,34 @@ The receipt for a completed job has this shape. Each part can be checked with th
   "settlement": {"status": "pending | submitted | not_submitted | dead_lettered | failed | disabled"}
 }
 ```
+
+## Chain rejections and settlement
+
+Proofs go to Team A's `TaskManager.submitProofs`. A bad proof is rejected on its own, and the rest
+of the batch is accepted. Each rejection emits `ProofRejected(taskId, reason)`. The submitter names
+the reason and stores it with the proof in the dead-letter queue (`proof_submitter:dlq`).
+
+| Code | Name | Resubmit? |
+| --- | --- | --- |
+| 1 | `TaskNotFound` | No. Final. |
+| 2 | `InvalidStatus` | No. Final. |
+| 3 | `ProofAlreadySubmitted` | No. Final. |
+| 4 | `InvalidPayload` | Yes |
+| other | `Unknown(<code>)` | No. Treated as final. |
+
+A dead-letter entry has these fields per proof: `task_id`, `proof_hash`, `result_hash`, `model_cid`,
+`submitted_at`, and `rejection_reason`. The field is `null` for a transient failure, such as an RPC
+error after the retries. Replay (`scripts/ops/replay_dlq.py`) resubmits only proofs whose
+`rejection_reason` is `null` or `InvalidPayload`. Proofs for tasks that are already completed or
+settled are skipped and never dead-lettered.
+
+When `SETTLE_AFTER_PROOF=true`, each accepted proof is followed by `SettlementContract.settleTask`.
+The `TaskSettled` payout is stored at `proof_submitter:settlement:<task_id>` as JSON:
+
+```json
+{"tx_hash": "0x…", "worker": "0x…", "worker_amount": 81, "staker_amount": 9, "treasury_amount": 10}
+```
+
+The amounts are in TEST wei. A failed settlement does not dead-letter the proof. It is counted in
+`settlement_failures` and logged. The job's `settlement.status` in the receipt does not show the
+payout yet.

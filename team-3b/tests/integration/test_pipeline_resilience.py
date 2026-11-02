@@ -206,6 +206,25 @@ def _fake_pipeline(
 
 
 @pytest.mark.asyncio
+async def test_a_dispatched_task_past_its_deadline_still_finishes() -> None:
+    """The deadline only gates starting work: the listener drops expired tasks before dispatch.
+
+    A task that was dispatched in time has its deadline checked by nothing after that, so
+    it runs to submission even if the deadline passes while it is in flight.
+    """
+    submitter = RecordingSubmitter()
+    pipeline = _fake_pipeline(DelayedEngine(delay=0.0), submitter=submitter)
+    task = _task("t-late", FAST_MODEL)
+    task["created"]["deadline"] = 1  # long past
+
+    await pipeline.enqueue(task)
+    records = await pipeline.drain()
+
+    assert [record.outcome for record in records] == [OUTCOME_SUBMITTED]
+    assert [task_id for task_id, *_ in submitter.submissions] == ["t-late"]
+
+
+@pytest.mark.asyncio
 async def test_inference_concurrency_is_capped_and_reported() -> None:
     """Nine tasks through three workers: the TEE never sees more than three at once.
 

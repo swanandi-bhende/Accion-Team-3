@@ -68,7 +68,7 @@ Each ask says what it blocks. "Blocks" means we cannot finish that part of the f
 
 ### From Team A
 
-1. **Prover allow-list (blocks proof submission on Galileo).** `PROVER` is null in
+1. **Resolved, DRIFT-006: prover allow-list** (was blocking proof submission). `PROVER` is null in
    `deployments/galileo.json`. Someone with TaskManager ownership must run
    `setProver(<our proof-submitter address>, true)`. We will send the address. It is derived from
    our signer key.
@@ -76,28 +76,28 @@ Each ask says what it blocks. "Blocks" means we cannot finish that part of the f
    `settle(bytes32, address)`. Our submitter only calls `submitProofs`. We need to know whether
    settlement is triggered by the contracts after `submitProofs`, or by us, and with which
    arguments.
-3. **Bid and accept flow (blocks the job auth on a real task).** Our job API accepts a request only
+3. **Resolved, DRIFT-011: bid and accept flow** (was blocking job auth on a real task). Our job API accepts a request only
    if the signing wallet is `taskWorker(taskId)`. So the agent's wallet has to be the accepted
    worker. We need: who may call `placeBid` and `acceptBid`, the order of calls for one task, and
    what the `capabilityProofHash` argument of `placeBid` should contain.
-4. **Official Galileo RPC, HTTP and WebSocket (blocks running outside a shared host).** We use the
+4. **Resolved, DRIFT-007: Galileo RPC** (was blocking running on the real chain). We use the
    public 0G RPC `evmrpc-testnet.0g.ai` today. We need the endpoint Team A runs or recommends, and
    any rate limit.
 5. **Deployment start blocks.** The listener scans from a block number. We need the block where
    TaskManager and Escrow were deployed, so we do not scan from genesis.
 6. **Finality policy (affects when we act on an event).** The number of confirmations before an
    event is final, the block time, and what happens on a reorg. We currently act at the head.
-7. **`ProofRejected` reason codes (blocks correct dead-letter reasons).** The meaning of each
+7. **Resolved, DRIFT-013: `ProofRejected` reason codes** (were blocking correct dead-letter reasons). The meaning of each
    `reason` value, and whether a rejected proof can be resubmitted.
 8. **`MAX_PROOF_BATCH` value and partial-batch semantics.** The number, and confirmation that a
    partially accepted batch is final for the accepted entries.
-9. **`descriptionHash` meaning and the model mapping (DRIFT-014, blocks real requests).** What the
+9. **Resolved, DRIFT-014: `descriptionHash` and the model mapping** (was blocking real requests). What the
    hash is computed over, so we can map a task to a registry model. We have proposed that the
    registry key is Team C's model id, and `descriptionHash` is `keccak(model_id)`. We need Team A
    to confirm the hash rule.
 10. **Model CID on chain.** `ProofSubmitted` carries `modelCid`, and `recordArtifact(bytes32, string)`
     also exists. We need to know which one is the record of the model CID.
-11. **Funding and payment token.** Funding is ERC-20. We need the token to use, its decimals (18 per
+11. **Resolved, DRIFT-009: funding and payment token.** Funding is ERC-20. We need the token to use, its decimals (18 per
     the handoff), and how the 81/9/10 split is applied: which contract does it, and does it pay
     `taskWorker`.
 12. **Deadlines.** What the contracts do after `deadline`, and whether we should skip expired tasks
@@ -179,3 +179,50 @@ Team A answered the asks. Recorded here, with the step-one changes:
 - **Limits:** `MAX_PROOF_BATCH` is 50, and a bad entry never reverts the batch.
 - **Deadlines:** the contracts accept proofs and settlement after the deadline. Our listener still
   skips expired tasks when it starts them.
+
+### Settlement and deadlines, 2026-11-02
+
+- **Settlement:** `SETTLE_AFTER_PROOF=true` makes the proof submitter call `settleTask` for each
+  accepted proof. The `TaskSettled` payout is stored in Redis under `proof_submitter:settlement:<task_id>`.
+  It is off by default. A failed settlement never dead-letters the proof, which is already on chain.
+  Job and task status endpoints do not show the payout yet.
+- **Deadlines:** the listener skips a task whose deadline has passed, at creation and again before
+  dispatch. After dispatch nothing checks the deadline, so a running task finishes.
+- **Galileo runbook:** `scripts/ops/galileo_full_task.py` runs the create, bid, deposit, and accept
+  sequence. Without `--execute` it runs a read-only preflight and sends nothing. It needs two funded
+  keys (`RUNBOOK_CREATOR_PRIVATE_KEY`, `RUNBOOK_WORKER_PRIVATE_KEY`) and TEST tokens from Team A.
+
+### Answers still to record, 2026-11-02
+
+- **RPC (DRIFT-007):** `https://evmrpc-testnet.0g.ai`, chain id 16602.
+- **Funding (DRIFT-009):** the bounty is the TEST ERC-20 (18 decimals). The creator calls `approve`,
+  then `EscrowContract.deposit`.
+- **Model CID:** the proof's model CID is recorded in `ProofSubmitted` (`modelCid`).
+- **Settlement:** `settleTask` is permissionless and pays 81 / 9 / 10 (worker, stakers, treasury).
+  Proofs and settlement are accepted after the deadline. The listener still skips expired tasks.
+- **Change policy:** Team A tags releases, and changes to `deployments/galileo.json` come with a note.
+
+## Open asks, 2026-11-02
+
+| Ask | Who | Status |
+| --- | --- | --- |
+| TEST tokens for the creator wallet (the escrow deposit needs them) | Team A | To ask |
+| A funded worker wallet to bid (Team C's agent wallet, or a stand-in) | Team C | Open |
+| A versioned release tag, so our pinned ABIs follow their change policy | Team A | To send |
+| The `capabilityProofHash` value for bids | Team C | Open. We use `bytes32(0)` until then. |
+
+Draft for the release tag:
+
+> Could you tag the TaskManager, EscrowContract and SettlementContract ABIs at the version we are
+> pinned to (`team_a_assets/`), and tell us the tag for each future change? Our build reads these
+> ABIs directly, so we want to pin a tagged version and follow your change policy.
+
+## Keys and funding, 2026-11-02
+
+- **Keys are separate.** Proof submission uses the signer Team A allow-listed,
+  `0x28FB61Dc27a37091f53C0c37b5026AdBbF5E1F46`. 0G uploads use their own key,
+  `0xCCF89EDCd8c5d2F1C4Ff7B5194a02a20618F311D`, which is set in `.env` only.
+- **0G test tokens:** the faucet is at faucet.0g.ai and limits each wallet to 0.1 0G a day. The
+  upload address is entered, but the faucet requires a CAPTCHA, which needs a person to complete.
+- **TEST tokens:** not yet received. We will ask Team A.
+

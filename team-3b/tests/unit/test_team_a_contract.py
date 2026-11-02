@@ -4,7 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import fakeredis.aioredis as fakeredis
 import pytest
@@ -23,7 +23,8 @@ from common.web3_checks import (
 from event_listener.config import artifact_candidates, load_contract_abi
 from event_listener.listener import EventListener
 from inference.pipeline import build_pipeline
-from proof_submitter.submitter import PendingProof, ProofSubmitter
+from proof_submitter.settlement import build_settlement_contract
+from proof_submitter.submitter import PendingProof, ProofSubmitter, is_replayable
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -309,11 +310,21 @@ class FakeFunctions:
     """Minimal stand-in for ``contract.functions`` with the Team A ABI."""
 
     def __init__(
-        self, max_batch: int | None, reject_task_ids: set[bytes] | None = None
+        self,
+        max_batch: int | None,
+        reject_task_ids: set[bytes] | None = None,
+        task_statuses: dict[bytes, int] | None = None,
     ) -> None:
         self.max_batch = max_batch
         self.reject_task_ids = reject_task_ids or set()
+        self.task_statuses = task_statuses or {}
         self.calls: list[list[bytes]] = []
+
+    def getTask(self, task_id: bytes) -> "FakeCall":
+        # getTask returns (creator, descriptionHash, deadline, bountyAmount, status).
+        # Tasks default to ASSIGNED, the status a task has while it takes proofs.
+        status = self.task_statuses.get(task_id, 1)
+        return FakeCall((None, b"", 0, 0, status))
 
     @property
     def MAX_PROOF_BATCH(self) -> Any:
@@ -329,6 +340,24 @@ class FakeFunctions:
         result_hashes: list[bytes],
     ) -> "FakeTransaction":
         return FakeTransaction(self, task_ids)
+
+
+class FakeCall:
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+    def call(self) -> Any:
+        return self.value
+
+
+class ReasonedEvent:
+    """A ProofRejected decoder that reports each task with its own reason code."""
+
+    def __init__(self, reasons: dict[bytes, int]) -> None:
+        self.reasons = reasons
+
+    def process_receipt(self, _receipt: Any) -> list[dict[str, Any]]:
+        return [{"args": {"taskId": task, "reason": code}} for task, code in self.reasons.items()]
 
 
 class FakeTransaction:
@@ -372,7 +401,9 @@ class FakeEth:
         return {"status": 1}
 
 
-def submitter(contract: FakeContract, redis_client: Any = None) -> ProofSubmitter:
+def submitter(
+    contract: FakeContract, redis_client: Any = None, settlement: Any = None
+) -> ProofSubmitter:
     return ProofSubmitter(
         web3=SimpleNamespace(eth=FakeEth()),
         contract=contract,
@@ -380,7 +411,53 @@ def submitter(contract: FakeContract, redis_client: Any = None) -> ProofSubmitte
         sleep=lambda _delay: asyncio.sleep(0),
         batch_window=0.0,
         allow_development_backend=True,
+        settlement_contract=settlement,
     )
+
+
+class FakeSettleCall:
+    def __init__(self, settlement: "FakeSettlement", task_id: bytes) -> None:
+        self.settlement = settlement
+        self.task_id = task_id
+
+    def build_transaction(self, options: dict[str, Any]) -> dict[str, Any]:
+        return options
+
+    def transact(self, options: dict[str, Any]) -> str:
+        if self.task_id in self.settlement.failing:
+            raise RuntimeError("execution reverted: task not completed")
+        self.settlement.settled.append(self.task_id)
+        self.settlement.last = self.task_id
+        return "0xsettle"
+
+
+class FakeTaskSettled:
+    def __init__(self, settlement: "FakeSettlement") -> None:
+        self.settlement = settlement
+
+    def process_receipt(self, _receipt: Any) -> list[dict[str, Any]]:
+        return [
+            {
+                "args": {
+                    "taskId": self.settlement.last,
+                    "worker": "0x" + "44" * 20,
+                    "workerAmount": 81,
+                    "stakerAmount": 9,
+                    "treasuryAmount": 10,
+                }
+            }
+        ]
+
+
+class FakeSettlement:
+    """SettlementContract stand-in: settleTask succeeds except for the ``failing`` tasks."""
+
+    def __init__(self, failing: set[bytes] | None = None) -> None:
+        self.failing = failing or set()
+        self.settled: list[bytes] = []
+        self.last: bytes = b""
+        self.functions = SimpleNamespace(settleTask=lambda task_id: FakeSettleCall(self, task_id))
+        self.events = SimpleNamespace(TaskSettled=lambda: FakeTaskSettled(self))
 
 
 def payload(task_id: str) -> tuple[str, AttestationReport, ProofArtifact, str]:
@@ -449,6 +526,120 @@ async def test_rejected_proofs_are_dead_lettered_without_retrying_the_batch() ->
     entry = json.loads((await client.lindex(ProofSubmitter.DLQ_KEY, 0)).decode())
     assert [proof["task_id"] for proof in entry["proofs"]] == ["task-1"]
     assert "ProofRejected" in entry["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_proofs_for_completed_or_settled_tasks_are_skipped_not_dead_lettered() -> None:
+    redis_client: Any = fakeredis.FakeRedis(decode_responses=False)
+    functions = FakeFunctions(
+        max_batch=None,
+        task_statuses={
+            ProofSubmitter._bytes32("task-0"): 2,  # COMPLETED
+            ProofSubmitter._bytes32("task-1"): 3,  # SETTLED
+        },
+    )
+    instance = submitter(FakeContract(functions), redis_client)
+
+    await instance._submit_batch([pending("task-0"), pending("task-1"), pending("task-2")])
+
+    assert functions.calls == [[ProofSubmitter._bytes32("task-2")]]
+    assert instance.metrics["skipped_closed_tasks"] == 2
+    assert await redis_client.llen(ProofSubmitter.DLQ_KEY) == 0
+
+
+@pytest.mark.asyncio
+async def test_each_rejection_reason_is_named_in_the_dead_letter_entry() -> None:
+    redis_client: Any = fakeredis.FakeRedis(decode_responses=False)
+    contract = FakeContract(FakeFunctions(max_batch=None))
+    contract.events = SimpleNamespace(
+        ProofRejected=lambda: ReasonedEvent(
+            {ProofSubmitter._bytes32("task-1"): 2, ProofSubmitter._bytes32("task-2"): 4}
+        )
+    )
+    instance = submitter(contract, redis_client)
+
+    await instance._submit_batch([pending("task-0"), pending("task-1"), pending("task-2")])
+
+    entry = json.loads((await redis_client.lindex(ProofSubmitter.DLQ_KEY, 0)).decode())
+    assert [(proof["task_id"], proof["rejection_reason"]) for proof in entry["proofs"]] == [
+        ("task-1", "InvalidStatus"),
+        ("task-2", "InvalidPayload"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("rejection_reason", "replayable"),
+    [
+        (None, True),  # transient RPC failure: no contract reason
+        ("InvalidPayload", True),
+        ("TaskNotFound", False),
+        ("InvalidStatus", False),
+        ("ProofAlreadySubmitted", False),
+        ("Unknown(9)", False),
+    ],
+)
+def test_only_transient_failures_and_invalid_payloads_are_replayable(
+    rejection_reason: str | None, replayable: bool
+) -> None:
+    assert is_replayable({"task_id": "task-1", "rejection_reason": rejection_reason}) is replayable
+
+
+def test_real_abi_get_task_reports_status_at_index_four() -> None:
+    outputs = team_a_contract().get_function_by_name("getTask").abi["outputs"][0]["components"]
+
+    assert [component["name"] for component in outputs][4] == "status"
+
+
+@pytest.mark.asyncio
+async def test_accepted_proofs_are_settled_and_their_payout_recorded() -> None:
+    redis_client: Any = fakeredis.FakeRedis(decode_responses=False)
+    settlement = FakeSettlement()
+    instance = submitter(FakeContract(FakeFunctions(max_batch=None)), redis_client, settlement)
+
+    await instance._submit_batch([pending("task-0"), pending("task-1")])
+
+    assert settlement.settled == [ProofSubmitter._bytes32("task-0"), ProofSubmitter._bytes32("task-1")]
+    payout = json.loads((await redis_client.get(ProofSubmitter.SETTLEMENT_KEY.format("task-0"))).decode())
+    assert payout["worker_amount"] == 81
+    assert payout["treasury_amount"] == 10
+    assert instance.metrics["settlements"] == 2
+
+
+@pytest.mark.asyncio
+async def test_rejected_proofs_are_not_settled() -> None:
+    settlement = FakeSettlement()
+    contract = FakeContract(FakeFunctions(max_batch=None), rejected=[ProofSubmitter._bytes32("task-1")])
+    instance = submitter(contract, settlement=settlement)
+
+    await instance._submit_batch([pending("task-0"), pending("task-1")])
+
+    assert settlement.settled == [ProofSubmitter._bytes32("task-0")]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_settlement_keeps_the_accepted_proof_out_of_the_dlq() -> None:
+    redis_client: Any = fakeredis.FakeRedis(decode_responses=False)
+    functions = FakeFunctions(max_batch=None)
+    settlement = FakeSettlement(failing={ProofSubmitter._bytes32("task-0")})
+    instance = submitter(FakeContract(functions), redis_client, settlement)
+
+    await instance._submit_batch([pending("task-0")])
+
+    assert functions.calls == [[ProofSubmitter._bytes32("task-0")]]
+    assert await redis_client.llen(ProofSubmitter.DLQ_KEY) == 0
+    assert instance.metrics["settlement_failures"] == 1
+    assert settlement.settled == []
+
+
+def test_settlement_contract_exists_only_when_the_flag_is_on() -> None:
+    assert build_settlement_contract(None, Settings(settle_after_proof=False)) is None
+
+
+def test_settlement_flag_without_a_settlement_address_fails_at_startup() -> None:
+    with pytest.raises(ConfigurationError):
+        build_settlement_contract(
+            None, cast(Settings, SimpleNamespace(settle_after_proof=True, settlement_address=""))
+        )
 
 
 def team_a_contract() -> Any:

@@ -59,6 +59,7 @@ from inference.engine import InferenceEngine
 from inference.sealed_key import load_sealed_key
 from inference.tee_runtime import TEERuntime
 from proof_generator.zkml_prover import ZkMLProver
+from proof_submitter.settlement import build_settlement_contract
 from proof_submitter.submitter import ProofSubmitter
 from verification.app import build_verification_interface
 from verification.verifiers import serialize_proof_artifact
@@ -687,6 +688,7 @@ def build_pipeline(settings: Settings | None = None, **overrides: Any) -> Pipeli
         private_key=settings.proof_submitter_private_key,
         batch_window=settings.proof_batch_window_s,
         allow_development_backend=settings.proof_allow_development_backend,
+        settlement_contract=build_settlement_contract(web3, settings),
     )
     listener = EventListener(
         web3,

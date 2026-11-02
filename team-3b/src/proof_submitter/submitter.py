@@ -17,6 +17,27 @@ from common.models import AttestationReport, ProofArtifact
 
 logger = logging.getLogger(__name__)
 
+# Team A's TaskStatus values that take no more proofs: COMPLETED (2) and SETTLED (3).
+CLOSED_TASK_STATUSES = frozenset({2, 3})
+# TaskManager.ProofRejected reason codes. Codes 1-3 are final: resubmitting cannot change them.
+PROOF_REJECTION_REASONS = {
+    1: "TaskNotFound",
+    2: "InvalidStatus",
+    3: "ProofAlreadySubmitted",
+    4: "InvalidPayload",
+}
+REPLAYABLE_REJECTIONS = frozenset({"InvalidPayload"})
+
+
+def is_replayable(proof: dict[str, Any]) -> bool:
+    """Whether a dead-letter proof may be resubmitted.
+
+    Transient failures (no rejection reason) and ``InvalidPayload`` may be. The other
+    rejection reasons are final, and so is any code this module does not know.
+    """
+    reason = proof.get("rejection_reason")
+    return reason is None or reason in REPLAYABLE_REJECTIONS
+
 
 @dataclass
 class PendingProof:
@@ -33,6 +54,8 @@ class PendingProof:
     proof_hash: str
     result_hash: str
     submitted_at: float = field(default_factory=time.time)
+    # Name of the ProofRejected reason, set only when the contract rejected this proof.
+    rejection_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return the JSON-safe summary of this proof stored in dead-letter entries."""
@@ -42,6 +65,7 @@ class PendingProof:
             "result_hash": self.result_hash,
             "model_cid": self.model_cid,
             "submitted_at": self.submitted_at,
+            "rejection_reason": self.rejection_reason,
         }
 
 
@@ -59,6 +83,7 @@ class ProofSubmitter:
     RETRY_INTERVAL = 10.0
     DLQ_KEY = "proof_submitter:dlq"
     ALERTS_KEY = "proof_submitter:alerts"
+    SETTLEMENT_KEY = "proof_submitter:settlement:{}"
 
     def __init__(
         self,
@@ -72,12 +97,15 @@ class ProofSubmitter:
         signer_address: str | None = None,
         allow_development_backend: bool = False,
         alert_webhook_url: str | None = None,
+        settlement_contract: Any | None = None,
     ):
         self.web3 = web3
         # Where dead-letter alerts are also posted, e.g. a Slack-compatible incoming webhook.
         # The URL is never logged, because it usually carries a token.
         self.alert_webhook_url = alert_webhook_url
         self.contract = contract
+        # SettlementContract, when SETTLE_AFTER_PROOF is on. None means proofs are not settled here.
+        self.settlement_contract = settlement_contract
         self.redis = redis_client
         self.private_key = private_key
         # On a real network the node has no unlocked accounts, so the sender must
@@ -103,6 +131,9 @@ class ProofSubmitter:
             "dlq_batches": 0,
             "last_batch_size": 0,
             "rejected_by_contract": 0,
+            "skipped_closed_tasks": 0,
+            "settlements": 0,
+            "settlement_failures": 0,
             "alerts_raised": 0,
         }
 
@@ -195,9 +226,9 @@ class ProofSubmitter:
         last_error: Exception | None = None
         remaining = chunk
         for attempt in range(1, self.MAX_RETRIES + 1):
-            remaining = await asyncio.to_thread(self._unrecorded, chunk)
+            remaining = await asyncio.to_thread(self._still_to_submit, chunk)
             if not remaining:
-                logger.info("PROOF_ALREADY_RECORDED size=%s", len(chunk))
+                logger.info("PROOF_NOTHING_TO_SUBMIT size=%s", len(chunk))
                 return None
             try:
                 tx_hash = await self._send_transaction(remaining)
@@ -218,6 +249,11 @@ class ProofSubmitter:
                     )
                     self.metrics["rejected_by_contract"] += len(rejected)
                     await self._dead_letter(rejected, RuntimeError("rejected on chain via ProofRejected"))
+                if self.settlement_contract is not None:
+                    rejected_ids = {id(proof) for proof in rejected}
+                    for proof in remaining:
+                        if id(proof) not in rejected_ids:
+                            await self._settle_task(proof.task_id)
                 return tx_hash
             except Exception as error:
                 last_error = error
@@ -230,16 +266,28 @@ class ProofSubmitter:
         await self._dead_letter(remaining, last_error)
         return None
 
-    def _unrecorded(self, proofs: list[PendingProof]) -> list[PendingProof]:
-        """The proofs the contract does not already hold with the same proof hash."""
-        getter = getattr(getattr(self.contract, "functions", None), "getProof", None)
-        if getter is None:
-            return list(proofs)
-        return [
-            proof
-            for proof in proofs
-            if getter(self._bytes32(proof.task_id)).call()[0] != self._bytes32(proof.proof_hash)
-        ]
+    def _still_to_submit(self, proofs: list[PendingProof]) -> list[PendingProof]:
+        """The proofs worth sending: their task is still open, and the contract lacks them.
+
+        A proof for a completed or settled task is skipped and counted, never
+        dead-lettered. The contract would reject it, and resending cannot change that.
+        """
+        functions = getattr(self.contract, "functions", None)
+        get_task = getattr(functions, "getTask", None)
+        get_proof = getattr(functions, "getProof", None)
+        remaining = []
+        for proof in proofs:
+            task_id = self._bytes32(proof.task_id)
+            if get_task is not None:
+                status = get_task(task_id).call()[4]
+                if status in CLOSED_TASK_STATUSES:
+                    logger.info("PROOF_SKIPPED_TASK_CLOSED task_id=%s status=%s", proof.task_id, status)
+                    self.metrics["skipped_closed_tasks"] += 1
+                    continue
+            if get_proof is not None and get_proof(task_id).call()[0] == self._bytes32(proof.proof_hash):
+                continue
+            remaining.append(proof)
+        return remaining
 
     def _sender(self) -> str:
         if self.signer_address:
@@ -277,31 +325,72 @@ class ProofSubmitter:
         proof_hashes = [self._bytes32(proof.proof_hash) for proof in proofs]
         model_cids = [proof.model_cid for proof in proofs]
         result_hashes = [self._bytes32(proof.result_hash) for proof in proofs]
-        sender = self._sender()
-        transaction = self.contract.functions.submitProofs(task_ids, proof_hashes, model_cids, result_hashes).build_transaction({
-            "from": sender,
-            "nonce": self.web3.eth.get_transaction_count(sender),
-        })
-        if self.private_key:
-            signed = self.web3.eth.account.sign_transaction(transaction, private_key=self.private_key)
-            tx_hash = self.web3.eth.send_raw_transaction(signed.raw_transaction)
-        else:
-            tx_hash = self.contract.functions.submitProofs(task_ids, proof_hashes, model_cids, result_hashes).transact({
-                "from": sender,
-            })
-        receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
-        if getattr(receipt, "status", receipt.get("status", 1) if isinstance(receipt, dict) else 1) != 1:
-            raise RuntimeError("proof submission transaction reverted")
+        tx_hash, receipt = self._transact(
+            self.contract.functions.submitProofs(task_ids, proof_hashes, model_cids, result_hashes)
+        )
         logger.info(
             "PROOF_CONFIRMATION_LATENCY seconds=%.3f batch_size=%s",
             self.clock() - min(proof.submitted_at for proof in proofs),
             len(proofs),
         )
+        return tx_hash, self._rejected_from_receipt(receipt, proofs)
+
+    def _transact(self, call: Any) -> tuple[str, Any]:
+        """Sign and send one contract call, wait for its receipt, and fail on a revert.
+
+        Returns the transaction hash as a hex string, and the receipt.
+        """
+        sender = self._sender()
+        if self.private_key:
+            transaction = call.build_transaction({
+                "from": sender,
+                "nonce": self.web3.eth.get_transaction_count(sender),
+            })
+            signed = self.web3.eth.account.sign_transaction(transaction, private_key=self.private_key)
+            tx_hash = self.web3.eth.send_raw_transaction(signed.raw_transaction)
+        else:
+            tx_hash = call.transact({"from": sender})
+        receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+        if getattr(receipt, "status", receipt.get("status", 1) if isinstance(receipt, dict) else 1) != 1:
+            raise RuntimeError("transaction reverted")
         normalised = str(tx_hash.hex()) if hasattr(tx_hash, "hex") else str(tx_hash)
-        return normalised, self._rejected_from_receipt(receipt, proofs)
+        return normalised, receipt
+
+    async def _settle_task(self, task_id: str) -> None:
+        """Call settleTask for a task whose proof the contract accepted, and record the payout.
+
+        Settlement is permissionless and separate from proving. A failure here never
+        dead-letters the proof, which is already on chain: the task stays settleable.
+        """
+        settlement = self.settlement_contract
+        if settlement is None:
+            return
+        try:
+            payout = await asyncio.to_thread(self._settle_on_chain, settlement, self._bytes32(task_id))
+        except Exception as error:  # noqa: BLE001 - a failed settlement is retried by hand
+            self.metrics["settlement_failures"] += 1
+            logger.warning("SETTLEMENT_FAILED task_id=%s error=%s", task_id, error)
+            return
+        await self.redis.set(self.SETTLEMENT_KEY.format(task_id), json.dumps(payout))
+        self.metrics["settlements"] += 1
+        logger.info("TASK_SETTLED task_id=%s payout=%s", task_id, payout)
+
+    def _settle_on_chain(self, settlement: Any, task_id: bytes) -> dict[str, Any]:
+        tx_hash, receipt = self._transact(settlement.functions.settleTask(task_id))
+        events = settlement.events.TaskSettled().process_receipt(receipt)
+        if not events:
+            raise RuntimeError("settleTask mined without a TaskSettled event")
+        args = dict(events[0]["args"])
+        return {
+            "tx_hash": tx_hash,
+            "worker": str(args["worker"]),
+            "worker_amount": int(args["workerAmount"]),
+            "staker_amount": int(args["stakerAmount"]),
+            "treasury_amount": int(args["treasuryAmount"]),
+        }
 
     def _rejected_from_receipt(self, receipt: Any, proofs: list[PendingProof]) -> list[PendingProof]:
-        """Proofs the contract reported as rejected in this receipt.
+        """Proofs the contract reported as rejected in this receipt, each tagged with its reason.
 
         Empty when the ABI has no ``ProofRejected`` event (the mock) or the receipt
         cannot be decoded, in which case the batch is treated as fully accepted.
@@ -323,11 +412,9 @@ class ProofSubmitter:
             rejected_ids[self._bytes32(task_id)] = int(args["reason"])
         rejected = [proof for proof in proofs if self._bytes32(proof.task_id) in rejected_ids]
         for proof in rejected:
-            logger.warning(
-                "PROOF_REJECTED task_id=%s reason=%s",
-                proof.task_id,
-                rejected_ids[self._bytes32(proof.task_id)],
-            )
+            code = rejected_ids[self._bytes32(proof.task_id)]
+            proof.rejection_reason = PROOF_REJECTION_REASONS.get(code, f"Unknown({code})")
+            logger.warning("PROOF_REJECTED task_id=%s reason=%s", proof.task_id, proof.rejection_reason)
         return rejected
 
     @staticmethod

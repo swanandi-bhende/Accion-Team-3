@@ -43,6 +43,7 @@ from inference.jobs import (
 from inference.sealed_key import load_sealed_key
 from inference.tee_runtime import TEERuntime
 from proof_generator.zkml_prover import ZkMLProver
+from proof_submitter.settlement import build_settlement_contract
 from proof_submitter.submitter import ProofSubmitter
 
 
@@ -80,6 +81,7 @@ def build_settlement(settings: Settings, redis_client: redis.Redis) -> ProofSubm
         batch_window=settings.proof_batch_window_s,
         allow_development_backend=settings.proof_allow_development_backend,
         alert_webhook_url=settings.alert_webhook_url,
+        settlement_contract=build_settlement_contract(web3, settings),
     )
 
 

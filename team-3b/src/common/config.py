@@ -104,6 +104,10 @@ class Settings(BaseSettings):
     proof_batch_window_s: float = 10.0
     proof_submitter_private_key: str = ""
     proof_submitter_contract_address: str | None = None
+    # Off: a proof is only submitted. On: after Team A accepts it, the submitter also calls
+    # SettlementContract.settleTask for the task and records the payout. Needs SETTLEMENT_ADDRESS.
+    settle_after_proof: bool = False
+    settlement_artifact: str = "SettlementContract"
     # Dead-letter alerts are always logged and recorded in Redis. When set, they are also posted
     # here (e.g. a Slack-compatible incoming webhook). The URL is never logged.
     alert_webhook_url: str | None = None
