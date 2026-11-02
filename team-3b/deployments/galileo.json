@@ -4,8 +4,8 @@
   "TEST_TOKEN_ADDRESS": "0x22374BC6FF12FF2Bf407Da332F16Ee65D52CE0EC",
   "BOUNTY_TOKEN_ADDRESS": "0x22374BC6FF12FF2Bf407Da332F16Ee65D52CE0EC",
   "ESCROW_ADDRESS": "0x5B685Ca03A8072FB3f9721Dd7017Ed0D8C719217",
-  "STAKING_ADDRESS": "0x41eCc7485d2Bbc188B4F638871ca3f00D2c65C38",
-  "IDENTITY_ADDRESS": "0xC70c8865eACC340AB15Af8d4e726F438CD639Db9",
+  "STAKING_ADDRESS": "0x41eCc7485d2Bbc188B4f638871ca3f00D2c65C38",
+  "IDENTITY_ADDRESS": "0xC70c8865eACC340AB15Af8d4e726F438Cd639Db9",
   "TASK_MANAGER_ADDRESS": "0xA55f34e4137aD55f48aB268d4361F2225C4B5078",
   "PROOF_SUBMITTER_CONTRACT_ADDRESS": "0xA55f34e4137aD55f48aB268d4361F2225C4B5078",
   "SETTLEMENT_ADDRESS": "0x45D1a7AF404D2EDf5E5c23C7c0b6338227b9BC4E",
@@ -14,11 +14,14 @@
   "ESCROW_ARTIFACT": "EscrowContract",
   "PROOF_SUBMITTER_ARTIFACT": "TaskManager",
   "PROVER": null,
-  "SOURCE": "Team A handoff (team_a_assets/team_a.txt), 2026-10-20",
+  "SOURCE": "Team A handoff (team_a_assets/team_a.txt, 2026-10-20); treasury, start block and token details from Team A's 2026-11-02 reply",
   "NOTES": [
     "PROOF_SUBMITTER_CONTRACT_ADDRESS is TaskManager: submitProofs and the ProofSubmitted/ProofRejected events live there.",
-    "SETTLEMENT_ADDRESS is SettlementContract, which settles escrowed funds (settleTask) after the proof is recorded.",
-    "PROVER is null: the proof submitter's signer must be added with TaskManager.setProver(address, true) before submitProofs will succeed.",
+    "SETTLEMENT_ADDRESS is SettlementContract: settleTask(bytes32) is permissionless once a task is Completed and funded.",
+    "PROVER stays null until Team A runs TaskManager.setProver for our proof-submitter address (0x28FB61Dc27a37091f53C0c37b5026AdBbF5E1F46, sent 2026-11-02).",
+    "START_BLOCK is Galileo's deployment block; the listener starts there (EVENT_START_BLOCK).",
     "Team A's own export calls this file deployments/galileo.json; the key names here are the ones common/config.py adopts."
-  ]
+  ],
+  "TREASURY_ADDRESS": "0x21dbf28f735063d8D43D7DB6Aa1550b9724755f2",
+  "START_BLOCK": 61149114
 }

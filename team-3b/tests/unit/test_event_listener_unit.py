@@ -373,3 +373,45 @@ def test_an_unknown_execution_trigger_is_rejected() -> None:
     redis = fakeredis.FakeRedis(decode_responses=False)
     with pytest.raises(ValueError, match="unknown execution trigger"):
         chain_listener(redis, GENESIS_A, head=1, trigger="on_tuesdays")
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_listener_starts_at_the_configured_block() -> None:
+    """Without a saved position, the listener reads from EVENT_START_BLOCK, not from genesis."""
+    early, deployed = bytes.fromhex("aa" * 32), bytes.fromhex("bb" * 32)
+    listener = chain_listener(
+        fakeredis.FakeRedis(decode_responses=False),
+        GENESIS_A,
+        head=61149200,
+        created=[created_event(early, 5), created_event(deployed, 61149120)],
+    )
+    listener.start_block = 61149114
+
+    from_block = await listener._get_last_processed_block() + 1
+    await listener._process_events(from_block)
+
+    assert from_block == 61149114
+    assert set(listener._task_events) == {listener._task_id(deployed)}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_waits_for_the_configured_confirmations() -> None:
+    """A task is dispatched once its events have the configured confirmations on top of them."""
+    task_id = bytes.fromhex("cc" * 32)
+    chain = FakeChain(GENESIS_A, head=100)
+    dispatched: list[dict[str, Any]] = []
+    listener = EventListener(
+        web3=chain,
+        task_manager=SimpleNamespace(events=SimpleNamespace(TaskCreated=FakeEvents([created_event(task_id, 99)]), BidAccepted=FakeEvents())),
+        escrow=SimpleNamespace(events=SimpleNamespace(TaskFunded=FakeEvents([funded_event(task_id, 99)]))),
+        redis_client=fakeredis.FakeRedis(decode_responses=False),
+        dispatch=dispatched.append,
+        confirmations=2,
+    )
+
+    await listener._process_events(0)
+    assert dispatched == [], "one confirmation is not enough"
+
+    chain.eth.block_number = 101
+    await listener._process_events(0)
+    assert len(dispatched) == 1

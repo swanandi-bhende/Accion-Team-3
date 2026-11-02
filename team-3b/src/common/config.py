@@ -27,6 +27,11 @@ DEPLOYMENT_ADDRESS_KEYS = (
     "TASK_MANAGER_ADDRESS",
     "ESCROW_ADDRESS",
     "PROOF_SUBMITTER_CONTRACT_ADDRESS",
+    "SETTLEMENT_ADDRESS",
+    "STAKING_ADDRESS",
+    "IDENTITY_ADDRESS",
+    "TREASURY_ADDRESS",
+    "TEST_TOKEN_ADDRESS",
 )
 # The all-zero address is the placeholder shipped in .env.example. It means "not
 # configured yet", so a deployment record replaces it.
@@ -71,6 +76,11 @@ class Settings(BaseSettings):
     web3_chain_id: int | None = None
     task_manager_address: str | None = None
     escrow_address: str | None = None
+    settlement_address: str | None = None
+    staking_address: str | None = None
+    identity_address: str | None = None
+    treasury_address: str | None = None
+    test_token_address: str | None = None
     mock_deployments_path: str | None = None
     # Directory of contract ABIs. Both layouts are read: the Hardhat artifact
     # tree (<Name>.sol/<Name>.json) and bare ABI exports (<Name>.abi.json).
@@ -119,6 +129,10 @@ class Settings(BaseSettings):
 
     # --- Pipeline ---
     pipeline_max_in_flight: int = 4
+    # First block the listener reads when it has no saved position. Galileo's deployment block.
+    event_start_block: int = 0
+    # Blocks a task's events need before work is dispatched. Detection itself happens at the head.
+    confirmations: int = 2
     # What starts a task: the company spec (Requirement 5) uses TaskCreated and TaskFunded;
     # bid_accepted (Team 3C's proposal) also waits for BidAccepted. Undecided with the company.
     execution_trigger: Literal["task_created_funded", "bid_accepted"] = "task_created_funded"

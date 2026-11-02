@@ -60,6 +60,8 @@ class EventListener:
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
         trigger: str = TASK_CREATED_FUNDED,
+        start_block: int = 0,
+        confirmations: int = 0,
     ):
         if trigger not in TRIGGERS:
             raise ValueError(f"unknown execution trigger {trigger!r}; expected one of {TRIGGERS}")
@@ -72,6 +74,8 @@ class EventListener:
         self.clock = clock
         self.sleep = sleep
         self.trigger = trigger
+        self.start_block = start_block
+        self.confirmations = confirmations
         self._task_events: dict[str, dict[str, Any]] = {}
         self._pending_since: dict[str, float] = {}
         self._connection_state = "disconnected"
@@ -113,8 +117,11 @@ class EventListener:
         return int(getattr(event, "blockNumber", 0))
 
     async def _get_last_processed_block(self) -> int:
+        """The saved cursor, or the block before ``start_block`` when nothing is saved yet."""
         value = await self.redis.get(self.LAST_BLOCK_KEY)
-        return int(value.decode() if isinstance(value, bytes) else value) if value else 0
+        if value:
+            return int(value.decode() if isinstance(value, bytes) else value)
+        return max(self.start_block - 1, 0)
 
     async def _persist_block_number(self, block_number: int) -> None:
         await self.redis.set(self.LAST_BLOCK_KEY, str(block_number))
@@ -266,9 +273,18 @@ class EventListener:
         required = ["created", "funded"] + (["accepted"] if self.trigger == BID_ACCEPTED else [])
         return all(key in task for key in required)
 
+    def _confirmed(self, task: dict[str, Any]) -> bool:
+        """True once the newest event of the task has ``confirmations`` blocks on top of it."""
+        if self.confirmations <= 0:
+            return True
+        newest = max(int(task[key]["block_number"]) for key in ("created", "funded", "accepted") if key in task)
+        return int(self.web3.eth.block_number) - newest >= self.confirmations
+
     async def _try_dispatch(self, task_id: str) -> bool:
         task = self._task_events.get(task_id)
         if not task or task.get("dispatched") or task.get("attempted") or not self._ready(task):
+            return False
+        if not self._confirmed(task):
             return False
         if self._expired(task["created"]["deadline"]):
             logger.warning("Skipping expired task_id=%s deadline=%s", task_id, task["created"]["deadline"])

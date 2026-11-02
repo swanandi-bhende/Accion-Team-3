@@ -627,7 +627,15 @@ def build_pipeline(settings: Settings | None = None, **overrides: Any) -> Pipeli
         batch_window=settings.proof_batch_window_s,
         allow_development_backend=settings.proof_allow_development_backend,
     )
-    listener = EventListener(web3, task_manager, escrow, redis_client, trigger=settings.execution_trigger)
+    listener = EventListener(
+        web3,
+        task_manager,
+        escrow,
+        redis_client,
+        trigger=settings.execution_trigger,
+        start_block=settings.event_start_block,
+        confirmations=settings.confirmations,
+    )
 
     return Pipeline(
         listener,

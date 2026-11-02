@@ -29,7 +29,12 @@ async def main() -> None:
     verify_chain_id(config["web3"], settings.web3_chain_id, "event-listener")
     redis_client = redis.from_url(settings.redis_url, decode_responses=False)
     listener = EventListener(
-        config["web3"], config["task_manager"], config["escrow"], redis_client
+        config["web3"],
+        config["task_manager"],
+        config["escrow"],
+        redis_client,
+        start_block=settings.event_start_block,
+        confirmations=settings.confirmations,
     )
 
     # SIGTERM (docker stop / compose down) and SIGINT end the poll loop after its

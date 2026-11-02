@@ -155,3 +155,27 @@ Each ask says what it blocks. "Blocks" means we cannot finish that part of the f
 
 The addresses come from Team A's handoff (`team_a_assets/team_a.txt`) and
 `deployments/galileo.json`. Check them when Team A changes them.
+
+## Status update, 2026-11-02
+
+Team A answered the asks. Recorded here, with the step-one changes:
+
+- **Prover allow-list:** confirmed. Our proof-submitter address,
+  `0x28FB61Dc27a37091f53C0c37b5026AdBbF5E1F46`, was sent. Team A will run `setProver`. Until then
+  `PROVER` stays null in `deployments/galileo.json`.
+- **Start block:** `EVENT_START_BLOCK=61149114`. A fresh listener reads from there, not genesis.
+- **Confirmations:** `CONFIRMATIONS=2`. Detection happens at the head. Dispatch waits for two blocks.
+- **Addresses:** Settlement, Staking, Identity, Treasury and the TEST token are in
+  `deployments/galileo.json`, `.env.example` and the config. Blank values are filled from the record.
+- **Settlement:** `settleTask` is permissionless, and it is not called automatically after
+  `submitProofs`. Our call is still to be decided (step 4).
+- **Bids:** create, place bid, fund, then `acceptBid` by the creator. Once accepted,
+  `taskWorker` returns the bidder, and our auth check passes.
+- **Descriptions:** `descriptionHash = keccak256(bytes(model_id))`, agreed with Team A. Our model
+  lookup is still on the old rule (step 2).
+- **Rejections:** `ProofRejected` carries a `uint8` code: 1 TaskNotFound, 2 InvalidStatus,
+  3 ProofAlreadySubmitted, 4 InvalidPayload. Codes 1–3 are final. Code 4 and transient errors can be
+  resubmitted (step 3).
+- **Limits:** `MAX_PROOF_BATCH` is 50, and a bad entry never reverts the batch.
+- **Deadlines:** the contracts accept proofs and settlement after the deadline. Our listener still
+  skips expired tasks when it starts them.
