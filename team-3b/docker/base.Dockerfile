@@ -9,7 +9,7 @@
 # first with no manual step.
 #
 # Service-specific extras stay in the service Dockerfiles: flwr only in
-# federated_learning/Dockerfile, the EZKL toolchain only in proof_submitter's.
+# docker/fl-orchestrator.Dockerfile, the EZKL toolchain only in the proof-submitter image.
 #
 # Both stages pin python:3.11-slim, matching the interpreter the test suite runs
 # against in CI.

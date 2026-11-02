@@ -51,10 +51,12 @@ chain/typechain-types/
 # Logs and databases
 logs/
 *.log
-data/
+data/*
 !data/zkml_spike/
 data/zkml_spike/*
-!data/zkml_spike/benchmark_result.json
+!data/zkml_spike/*.json
+!data/zkml_spike/scale/
+!data/zkml_spike/scale/*.json
 *.sqlite3
 
 # IDEs

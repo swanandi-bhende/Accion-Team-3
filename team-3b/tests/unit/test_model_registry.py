@@ -6,12 +6,24 @@ from typing import cast
 
 import fakeredis.aioredis as fakeredis
 import pytest
+from web3 import Web3
 
 from common.exceptions import IntegrityCheckFailedError, StorageUnavailableError
 from common.interfaces import StorageBackend
-from common.model_registry import FAILED_UPLOAD_KEY, ModelRegistry
+from common.model_registry import (
+    FAILED_UPLOAD_KEY,
+    UPLOAD_QUEUE_KEY,
+    ModelRegistry,
+    description_hash,
+    model_id_for_description_hash,
+)
 from common.sealing import seal
 from tests.property.test_model_registry_prop import MockStorageBackend
+
+
+async def queued_uploads(registry: ModelRegistry) -> int:
+    """How many uploads are still queued in Redis, waiting for storage."""
+    return int(await cast(Awaitable[int], registry.redis.llen(UPLOAD_QUEUE_KEY)))
 
 
 class FailingStorageBackend(StorageBackend):
@@ -28,21 +40,27 @@ class FailingStorageBackend(StorageBackend):
     async def retrieve(self, cid: str) -> bytes:
         return b"mock_data"
 
+
 @pytest.fixture
 def redis_client() -> fakeredis.FakeRedis:
     return fakeredis.FakeRedis(decode_responses=False)
 
+
 @pytest.mark.asyncio
-async def test_get_unknown_model_returns_none(redis_client: fakeredis.FakeRedis) -> None:
+async def test_get_unknown_model_returns_none(
+    redis_client: fakeredis.FakeRedis,
+) -> None:
     storage = FailingStorageBackend(0)
     registry = ModelRegistry(redis_client, storage)
 
     result = await registry.get("unknown_model")
     assert result is None
 
+
 @pytest.mark.asyncio
 async def test_register_multiple_versions(redis_client: fakeredis.FakeRedis) -> None:
     from tests.property.test_model_registry_prop import MockStorageBackend
+
     storage = MockStorageBackend()
     registry = ModelRegistry(redis_client, storage)
 
@@ -66,6 +84,7 @@ async def test_register_multiple_versions(redis_client: fakeredis.FakeRedis) -> 
     assert v1.version == 1
     assert v1.cid == cid1
 
+
 @pytest.mark.asyncio
 async def test_concurrent_next_version(redis_client: fakeredis.FakeRedis) -> None:
     storage = FailingStorageBackend(0)
@@ -79,6 +98,7 @@ async def test_concurrent_next_version(redis_client: fakeredis.FakeRedis) -> Non
 
     # Should get exactly 1 to 10
     assert sorted(results) == list(range(1, 11))
+
 
 @pytest.mark.asyncio
 async def test_upload_backoff_and_success(redis_client: fakeredis.FakeRedis) -> None:
@@ -107,7 +127,7 @@ async def test_upload_waits_out_an_outage_with_no_attempt_cap(
 
     assert cid == "QmSuccess"
     assert storage.attempts == 13
-    assert await registry.pending_upload_count() == 0
+    assert await queued_uploads(registry) == 0
     assert list(tmp_path.iterdir()) == []
 
 
@@ -122,7 +142,9 @@ async def test_backoff_follows_the_spec_sequence_and_stops_at_the_maximum(
         delays.append(delay)
 
     monkeypatch.setattr("common.model_registry.asyncio.sleep", record)
-    registry = ModelRegistry(redis_client, FailingStorageBackend(fail_count=8), spool_dir=tmp_path)
+    registry = ModelRegistry(
+        redis_client, FailingStorageBackend(fail_count=8), spool_dir=tmp_path
+    )
 
     await registry.upload_model("test_model", b"mock_data")
 
@@ -130,16 +152,20 @@ async def test_backoff_follows_the_spec_sequence_and_stops_at_the_maximum(
 
 
 @pytest.mark.asyncio
-async def test_queued_upload_survives_a_restart(redis_client: fakeredis.FakeRedis, tmp_path: Path) -> None:
+async def test_queued_upload_survives_a_restart(
+    redis_client: fakeredis.FakeRedis, tmp_path: Path
+) -> None:
     down = FailingStorageBackend(fail_count=10**9)
     first = ModelRegistry(redis_client, down, spool_dir=tmp_path)
     first.UPLOAD_BACKOFF_BASE = 0.001
-    task = asyncio.create_task(first.upload_model("queued_model", b"model-bytes", architecture="linear"))
+    task = asyncio.create_task(
+        first.upload_model("queued_model", b"model-bytes", architecture="linear")
+    )
     for _ in range(500):
-        if await first.pending_upload_count() == 1:
+        if await queued_uploads(first) == 1:
             break
         await asyncio.sleep(0.005)
-    assert await first.pending_upload_count() == 1
+    assert await queued_uploads(first) == 1
 
     task.cancel()  # the process dies while storage is still down
     with pytest.raises(asyncio.CancelledError):
@@ -153,7 +179,7 @@ async def test_queued_upload_survives_a_restart(redis_client: fakeredis.FakeRedi
     assert cids == [entry.cid]
     assert entry.architecture == "linear"
     assert entry.hash == hashlib.sha256(b"model-bytes").hexdigest()
-    assert await restarted.pending_upload_count() == 0
+    assert await queued_uploads(restarted) == 0
     assert list(tmp_path.iterdir()) == []
 
 
@@ -172,7 +198,7 @@ async def test_integrity_failure_moves_the_upload_to_the_failed_list(
 
     with pytest.raises(IntegrityCheckFailedError):
         await registry.upload_model("tampered", b"real-model")
-    assert await registry.pending_upload_count() == 0
+    assert await queued_uploads(registry) == 0
     assert await cast(Awaitable[int], redis_client.llen(FAILED_UPLOAD_KEY)) == 1
 
 
@@ -212,10 +238,29 @@ async def test_sealed_blob_is_registered_under_its_plaintext_hash(
     storage = MockStorageBackend()
     registry = ModelRegistry(redis_client, storage, spool_dir=tmp_path)
 
-    cid = await registry.upload_model("sealed", blob, model_hash=hashlib.sha256(plaintext).hexdigest())
+    cid = await registry.upload_model(
+        "sealed", blob, model_hash=hashlib.sha256(plaintext).hexdigest()
+    )
 
     entry = await registry.get("sealed")
     assert entry is not None
     assert entry.cid == cid
     assert entry.hash == hashlib.sha256(plaintext).hexdigest()
     assert await storage.retrieve(cid) == blob
+
+
+@pytest.mark.asyncio
+async def test_a_task_finds_the_model_registered_as_x_by_keccak_of_x(
+    redis_client: fakeredis.FakeRedis,
+) -> None:
+    """Team A's rule: a task created for model "x" carries descriptionHash keccak256(b"x")."""
+    storage = MockStorageBackend()
+    registry = ModelRegistry(redis_client, storage)
+    binary = b"model-x-bytes"
+    await registry.register("x", await storage.upload(binary), binary)
+
+    task_hash = Web3.keccak(b"x")
+
+    assert description_hash("x") == "0x" + task_hash.hex().removeprefix("0x")
+    assert await model_id_for_description_hash(redis_client, task_hash) == "x"
+    assert await model_id_for_description_hash(redis_client, b"\x01" * 32) is None

@@ -6,10 +6,7 @@
 # Nothing has to be prepared by hand: the node runs a local chain with Team A's
 # *deployed* bytecode (installed by the team-a-contracts service), and every
 # service waits for its dependencies to be *healthy* rather than merely started.
-# See docs/DEPLOYMENT.md.
-#
-# The stub contracts we wrote before Team A delivered live in
-# mocks/legacy_mock_contracts/ and are not used by anything here.
+# See docs/SETUP.md.
 
 services:
   # Shared Python base image (docker/base.Dockerfile). It exits as soon as it
@@ -96,7 +93,7 @@ services:
   seed-model:
     build:
       context: .
-      dockerfile: inference/Dockerfile
+      dockerfile: docker/inference.Dockerfile
       additional_contexts:
         base: service:base
     command: ["python", "-m", "scripts.ops.seed_model_registry"]
@@ -116,7 +113,7 @@ services:
   inference-engine:
     build:
       context: .
-      dockerfile: inference/Dockerfile
+      dockerfile: docker/inference.Dockerfile
       additional_contexts:
         base: service:base
     environment:
@@ -209,7 +206,7 @@ services:
     stop_grace_period: 30s
     build:
       context: .
-      dockerfile: proof_submitter/Dockerfile
+      dockerfile: docker/proof-submitter.Dockerfile
       additional_contexts:
         base: service:base
       args:
@@ -243,7 +240,7 @@ services:
   verification-api:
     build:
       context: .
-      dockerfile: verification/Dockerfile
+      dockerfile: docker/verification.Dockerfile
       additional_contexts:
         base: service:base
       args:
@@ -273,11 +270,11 @@ services:
 
   # One-shot training job: runs the configured federated-learning rounds, stores
   # the resulting model, and exits 0. The long-lived gRPC/SuperLink entrypoint for
-  # real multi-process runs is federated_learning/network_runner.py.
+  # real multi-process runs is src/federated_learning/network_runner.py.
   fl-orchestrator:
     build:
       context: .
-      dockerfile: federated_learning/Dockerfile
+      dockerfile: docker/fl-orchestrator.Dockerfile
       additional_contexts:
         base: service:base
     environment:

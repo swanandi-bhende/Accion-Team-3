@@ -215,6 +215,20 @@ async def test_property_10_timed_out_clients_excluded_and_logged(caplog: pytest.
     assert "slow" in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_a_round_is_bounded_by_one_timeout_not_one_per_client() -> None:
+    """Requirement 4.5: the round timeout bounds the whole round, not each client in turn."""
+    base_weights = [np.array([[1.0], [2.0]]), np.array([0.5])]
+    clients = [FixedClient("fast", base_weights)] + [SlowClient(f"slow-{i}", base_weights, delay=1.0) for i in range(2)]
+    orchestrator, _, _, _ = build_orchestrator(clients)
+    config = FLTaskConfig(task_id="r4-bound", num_clients=3, num_rounds=1, round_timeout=0.3)
+
+    result = await orchestrator.run_training(config)
+
+    assert result.provenance[0].participating_clients == 1
+    assert result.provenance[0].round_duration < 0.5, f"round took {result.provenance[0].round_duration:.2f} s"
+
+
 # --------------------------------------------------------------------------- #
 # Property 11 - trained model stored and resolvable (14.5 / 14.6)
 # --------------------------------------------------------------------------- #
@@ -248,11 +262,11 @@ async def test_property_11_trained_model_is_stored_and_resolvable() -> None:
 # Strategy selection (14.3)
 # --------------------------------------------------------------------------- #
 
-def test_build_strategy_defaults_to_fedavg_with_fault_tolerant_minimum() -> None:
+def test_build_strategy_defaults_to_fedavg_with_the_full_roster_as_quorum() -> None:
     strategy = build_strategy(FLTaskConfig(task_id="s", num_clients=3, num_rounds=1))
 
     assert isinstance(strategy, FedAvg)
-    assert strategy.min_fit_clients == 1
+    assert strategy.min_fit_clients == 3
     assert strategy.min_available_clients == 3
 
 

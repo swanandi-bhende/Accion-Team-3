@@ -14,7 +14,7 @@ import fakeredis.aioredis as fakeredis
 import numpy as np
 import onnxruntime
 import pytest
-from google.protobuf.message import DecodeError
+from google.protobuf.message import DecodeError  # type: ignore[import-untyped]
 
 # Look the package up without importing it. Importing ezkl into the test process loads its
 # native threads there, and they abort the interpreter at exit. The EZKL work runs in a child.
@@ -64,8 +64,8 @@ def bundle(model_bytes: bytes, model_hash: str, store: Path) -> ezkl_backend.Pro
 
 def run_model(model_bytes: bytes, x: np.ndarray) -> np.ndarray:
     session = onnxruntime.InferenceSession(model_bytes, providers=["CPUExecutionProvider"])
-    (output,) = session.run(None, {session.get_inputs()[0].name: x})
-    return output
+    outputs: list[np.ndarray] = session.run(None, {session.get_inputs()[0].name: x})
+    return outputs[0]
 
 
 def receipt_for(model_hash: str, input_bytes: bytes, output: np.ndarray) -> ExecutionReceipt:
@@ -163,7 +163,7 @@ def test_ezkl_backend_fails_at_construction_when_ezkl_is_missing(monkeypatch: py
     monkeypatch.setattr(ezkl_backend, "load_ezkl", missing)
 
     with pytest.raises(ProvingBackendUnavailableError):
-        ZkMLProver(SimpleNamespace(), backend="ezkl")
+        ZkMLProver(SimpleNamespace(), backend="ezkl")  # type: ignore[arg-type]
 
 
 # --- the prover -------------------------------------------------------------------------

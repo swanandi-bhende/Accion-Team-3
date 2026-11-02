@@ -4,15 +4,14 @@ from pathlib import Path
 import fakeredis.aioredis as fakeredis
 import numpy as np
 import pytest
-from pydantic import ValidationError
 
-from common.config import Settings
-from common.exceptions import IntegrityCheckFailedError
+from common.exceptions import ConfigurationError, IntegrityCheckFailedError
 from common.model_registry import ModelRegistry
 from common.models import InferenceRequest
 from common.sealing import seal
 from common.tensors import decode_tensor
 from inference.engine import InferenceEngine
+from inference.sealed_key import load_sealed_key
 from inference.tee_runtime import TEERuntime
 from tests.onnx_fixtures import (
     expected_linear_output,
@@ -116,11 +115,21 @@ async def test_engine_without_the_provisioned_key_cannot_open_the_model(
         await unprovisioned.execute(InferenceRequest(model_id="needs-the-key", input_data=tensor_bytes()))
 
 
-def test_sealed_key_setting_must_be_a_256_bit_hex_key() -> None:
-    assert Settings(tee_sealed_key="ab" * 32).sealed_key_bytes() == bytes.fromhex("ab" * 32)
-    assert Settings(tee_sealed_key="").sealed_key_bytes() is None
-    assert Settings().sealed_key_bytes() is None
-    with pytest.raises(ValidationError):
-        Settings(tee_sealed_key="ab" * 16)
-    with pytest.raises(ValidationError):
-        Settings(tee_sealed_key="zz" * 32)
+def test_sealed_key_is_created_once_and_reloaded_after_a_restart(tmp_path: Path) -> None:
+    path = tmp_path / "keys" / "sealed_key.bin"
+
+    first = load_sealed_key(str(path))
+    after_restart = load_sealed_key(str(path))
+
+    assert first is not None and len(first) == 32
+    assert after_restart == first
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_no_key_path_gives_no_key_and_a_wrong_length_file_is_refused(tmp_path: Path) -> None:
+    assert load_sealed_key(None) is None
+    short = tmp_path / "short.bin"
+    short.write_bytes(b"x" * 16)
+
+    with pytest.raises(ConfigurationError, match="exactly 32 raw bytes"):
+        load_sealed_key(str(short))

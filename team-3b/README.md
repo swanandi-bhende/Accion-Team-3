@@ -1,61 +1,61 @@
-# Verifiable AI Execution Subsystem (Team 3b)
+# Verifiable AI Execution (Team 3b)
 
-Verifiable AI Execution subsystem (Team 3b) — off-chain AI inference with TEE-attested compute isolation and zkML proof generation, feeding cryptographic proofs back to the on-chain settlement layer.
+This subsystem runs AI models off-chain and produces proof that the result is correct. A smart
+contract can then check that proof, so nobody has to trust the AI agent that ran the model.
 
-## Problem Statement
-The integration of Artificial Intelligence with Web3 faces a critical vulnerability known as the "Oracle Problem": smart contracts cannot natively trust off-chain AI outputs, as standard centralized servers offer no guarantees of computational integrity. This subsystem exists to make inference verifiable. By utilizing Trusted Execution Environments (TEEs) for hardware attestation and zero-knowledge machine learning (zkML) proofs, we ensure that an AI agent hasn't spoofed data, altered models, or tampered with execution to claim bounties. 
+It has four parts:
 
-## Core Responsibilities
-- **Blockchain Event Monitoring:** Listening to Team 3a's on-chain events (`TaskCreated`, `TaskFunded`) to trigger workloads.
-- **Secure Execution:** Executing inference inside a TEE (Intel SGX or AMD SEV) for memory isolation and encryption.
-- **Proof Generation:** Generating zero-knowledge (zkML) proofs that attest to correct execution without revealing model weights.
-- **Federated Learning:** Orchestrating federated learning pipelines across nodes via the Flower framework.
-- **On-chain Settlement:** Submitting verifiable cryptographic proofs and execution artifacts (CIDs) back to the blockchain.
+- **Inference.** Runs a model inside a sandboxed process, and returns a signed receipt.
+- **Attestation.** A TEE-style report that binds the input, the output, and the enclave.
+- **Proofs.** A zero-knowledge proof (zkML) that the model produced the output.
+- **Settlement.** Listens for tasks on the chain, and submits proofs back to the contract.
 
-## System Architecture Overview
-The system workflow follows a strict pipeline:
-`Event_Listener` → `Inference_Engine` → `TEE_Runtime` → `Proof_Generator (zkML)` → `Proof_Submitter` → `on-chain`
+Plus a federated-learning pipeline that trains models across several clients, and a verification
+API that checks proofs for anyone.
 
-### Integration Status
-- **Team A (Smart Contracts):** INTEGRATED. The listener and submitter run against Team A's real contracts — ABIs in `team_a_assets/`, addresses in `deployments/galileo.json`, and their deployed bytecode replayed onto the local `chain/` node by `scripts/ops/install_team_a_local.py`. Chain id 16602, the same as 0G Galileo.
-- **Team C (Agent Logic):** MOCKED. Expected agent payloads are stubbed locally pending finalized schemas from Team C.
-- **Storage:** IPFS (Kubo HTTP API) by default. `MODEL_STORAGE_BACKEND=0g` stores model binaries on 0G Storage through the official `0g-storage-client` CLI. It has been run once against the Galileo testnet (chain 16602): a 155-byte fixture was uploaded, downloaded, and matched byte for byte. Mainnet has not been used. Model uploads are queued durably and retried with 5–300 s backoff while storage is unreachable (Requirement 7.5).
+## Status
 
-### Open decision: what starts execution
-- **Company spec, Requirement 5:** the listener starts workloads on `TaskCreated` and `TaskFunded`. This is what the code does today.
-- **Team C's proposal:** start execution on `BidAccepted`, so only the winning worker runs a task, and nothing runs before a winner exists.
-- The two are different triggers for the same work. Running both risks executing a task twice, or before anyone has won it. The company and Team C need to choose one.
-- Until they do, the spec's trigger stays the default.
-- **Both are built, and the setting picks one.** `EXECUTION_TRIGGER=task_created_funded` (the default, the spec) or `EXECUTION_TRIGGER=bid_accepted` (Team C's proposal). Set it in `.env` and restart the pipeline. Each task still runs at most once, under either setting.
+The code is built and tested. Several parts are not real yet:
 
-### Do not use the mock contracts
+- **The TEE is a software simulator.** Nothing here is hardware-attested.
+- **Large zkML models are not feasible yet.** EZKL works up to about 1 million weights. A 500 MB
+  model is out of reach on this hardware.
+- **Two decisions are open.** What starts a task, and the proof-size target.
 
-Our own stub contracts are archived in `mocks/legacy_mock_contracts/`. **They are
-retired: do not deploy them, do not point a service at them, and do not test
-against them.** They mirror Team A's ABI shape but none of their authorisation or
-lifecycle rules (Prover allow-list, bids, escrow release), so a passing test there
-proves almost nothing. Every chain-facing test in this repository now installs
-Team A's real bytecode at their Galileo addresses instead — see `mocks/README.md`.
+Details, numbers and evidence are in [docs/STATUS.md](docs/STATUS.md).
 
-## Quick Start
-1. **Clone the repository.**
-2. **Install dependencies:** Run `./setup.sh` (Requires Python 3.10+ and Docker).
-3. **Configure Environment:** Copy `.env.example` to `.env` and fill in necessary fields.
-4. **Run Tests:** `pytest tests/unit/ tests/property/ --tb=short -v` (the chain tests start a local Hardhat node running Team A's contracts; Node 20+ is needed)
-5. **Start Services:** `docker-compose up -d`
+## Quick start
 
-## Core Loop Checkpoint
+```bash
+./setup.sh                      # Python venv, dependencies, a .env copied from .env.example
+docker compose up -d            # Redis, IPFS, a local chain, and every service
+pytest tests/unit tests/property -q
+```
 
-The V1.6 checkpoint covers Properties 1-5, 19, and 20 with Hypothesis, focused
-unit tests, and a CI gate backed by a Redis service container. Run
-`pytest --cov=inference --cov=common --cov-report=term-missing` to reproduce the
-coverage report. The review record and known limitations are in
-`docs/CHECKPOINTS.md`.
+Full instructions are in [docs/SETUP.md](docs/SETUP.md).
 
-Reproduce the real EZKL benchmark with `venv/bin/python
-scripts/zkml/ezkl_mlp_benchmark.py`. The measured result is written to
-`data/zkml_spike/benchmark_result.json`.
+## Documentation
 
-## Further Reading
-- **Requirements & Architecture:** See the design document in `/docs`.
-- **Known Gaps:** Refer to `docs/ROADMAP.md` for items blocked on other teams.
+| File | What it covers |
+| --- | --- |
+| [docs/SETUP.md](docs/SETUP.md) | Install, configure, run, test, and the operator scripts |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | The parts, how they connect, and where state lives |
+| [docs/API.md](docs/API.md) | HTTP endpoints, authorization, and error codes |
+| [docs/INTEGRATION.md](docs/INTEGRATION.md) | What we depend on from Team A and 0G, and what Team C sends us |
+| [docs/STATUS.md](docs/STATUS.md) | Requirement by requirement status, measurements, limits, and open decisions |
+
+## Repository layout
+
+| Folder | Contents |
+| --- | --- |
+| `src/common/` | Shared models, configuration, the model registry, and storage backends |
+| `src/inference/` | Inference engine, sandbox, TEE runtime, job API, and the pipeline |
+| `src/proof_generator/` | zkML provers: the development backend and EZKL |
+| `src/proof_submitter/` | Batches proofs, submits them on chain, and keeps dead letters and alerts |
+| `src/event_listener/` | Watches Team A's contracts for tasks |
+| `src/verification/` | Verifies attestations and zkML proofs (the `/verify` API) |
+| `src/federated_learning/` | Flower-based training and model storage |
+| `scripts/` | Operator and benchmark scripts |
+| `tests/` | Unit, property, and integration tests |
+| `chain/`, `deployments/`, `team_a_assets/` | Local chain, Team A's deployment record, and their ABIs |
+| `docker/`, `docker-compose.yml` | Container images and the service stack |

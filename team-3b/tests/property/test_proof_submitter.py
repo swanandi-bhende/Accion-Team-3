@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import fakeredis.aioredis as fakeredis
+import httpx
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -139,6 +140,57 @@ async def test_property_18_three_failures_persist_dlq_and_alert(caplog: pytest.L
     assert len(entries) == 1
     assert "PROOF_SUBMISSION_FAILED_PERMANENTLY" in caplog.text
     assert json.loads(entries[0])["proofs"][0]["task_id"] == "failed"
+    alerts = await instance.redis.lrange(instance.ALERTS_KEY, 0, -1)
+    assert len(alerts) == 1
+    assert json.loads(alerts[0])["task_ids"] == ["failed"]
+    assert json.loads(alerts[0])["delivery"] == "not_configured"
+
+
+def mock_webhook(monkeypatch: pytest.MonkeyPatch, handler: Callable[[httpx.Request], httpx.Response]) -> None:
+    """Send every httpx client's requests to ``handler`` instead of the network."""
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+
+
+@pytest.mark.asyncio
+async def test_a_dead_letter_alert_is_recorded_and_posted_to_the_webhook(monkeypatch: pytest.MonkeyPatch) -> None:
+    posted: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posted.append(json.loads(request.content))
+        return httpx.Response(200)
+
+    mock_webhook(monkeypatch, handler)
+    instance = submitter()
+    instance.alert_webhook_url = "https://hooks.test/alerts"
+    proof = await instance.submit_proof(*payload("alerted"))
+    instance._batch_timer.cancel()  # type: ignore[union-attr]
+
+    await instance._dead_letter([proof], RuntimeError("rpc down"))
+
+    assert len(posted) == 1
+    assert posted[0]["event"] == "proof_submission_failed_permanently"
+    assert posted[0]["task_ids"] == ["alerted"]
+    assert "rpc down" in posted[0]["text"]
+    record = json.loads((await instance.redis.lrange(instance.ALERTS_KEY, 0, -1))[0])
+    assert record["delivery"] == "delivered"
+    assert instance.metrics["alerts_raised"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_webhook_post_is_recorded_and_the_dead_letter_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_webhook(monkeypatch, lambda request: httpx.Response(500))
+    instance = submitter()
+    instance.alert_webhook_url = "https://hooks.test/alerts"
+    proof = await instance.submit_proof(*payload("undelivered"))
+    instance._batch_timer.cancel()  # type: ignore[union-attr]
+
+    await instance._dead_letter([proof], RuntimeError("rpc down"))
+
+    record = json.loads((await instance.redis.lrange(instance.ALERTS_KEY, 0, -1))[0])
+    assert record["delivery"] == "failed: HTTPStatusError"
+    assert "hooks.test" not in json.dumps(record)
+    assert len(await instance.redis.lrange(instance.DLQ_KEY, 0, -1)) == 1
 
 
 @pytest.mark.asyncio

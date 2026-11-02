@@ -6,19 +6,25 @@ from typing import Any
 
 import fakeredis.aioredis as fakeredis
 import pytest
-from httpx import ASGITransport, AsyncClient
+from web3 import Web3
 
 from common.config import get_settings
-from event_listener.app import create_status_app
+from common.model_registry import ModelRegistry
 from event_listener.config import load_contract_abi
 from event_listener.listener import EventListener
+from tests.property.test_model_registry_prop import MockStorageBackend
 
 
 async def ready_task(listener: EventListener, task_id: str) -> None:
     """Record both events for ``task_id`` so the task is ready to dispatch."""
     deadline = int(time.time()) + 3600
     listener._task_events[task_id] = {
-        "created": {"task_id": task_id, "deadline": deadline, "description_hash": b"\x01", "block_number": 1},
+        "created": {
+            "task_id": task_id,
+            "deadline": deadline,
+            "description_hash": b"\x01",
+            "block_number": 1,
+        },
         "funded": {"task_id": task_id, "funded_amount": 1, "block_number": 2},
     }
     await listener._persist_task_state(task_id)
@@ -47,7 +53,9 @@ class FakeEvents:
         self.entries = entries or []
         self.calls: list[tuple[int, Any]] = []
 
-    def get_logs(self, from_block: int, to_block: Any = "latest") -> list[dict[str, Any]]:
+    def get_logs(
+        self, from_block: int, to_block: Any = "latest"
+    ) -> list[dict[str, Any]]:
         self.calls.append((from_block, to_block))
         return [entry for entry in self.entries if entry["blockNumber"] >= from_block]
 
@@ -64,7 +72,10 @@ def created_event(task_id: bytes, block: int) -> dict[str, Any]:
 
 
 def funded_event(task_id: bytes, block: int) -> dict[str, Any]:
-    return {"blockNumber": block, "args": {"taskId": task_id, "funder": "0xabc", "amount": 1}}
+    return {
+        "blockNumber": block,
+        "args": {"taskId": task_id, "funder": "0xabc", "amount": 1},
+    }
 
 
 def accepted_event(task_id: bytes, block: int, worker: str) -> dict[str, Any]:
@@ -84,7 +95,9 @@ def chain_listener(
     return EventListener(
         web3=FakeChain(genesis, head),
         task_manager=SimpleNamespace(
-            events=SimpleNamespace(TaskCreated=FakeEvents(created), BidAccepted=FakeEvents(accepted))
+            events=SimpleNamespace(
+                TaskCreated=FakeEvents(created), BidAccepted=FakeEvents(accepted)
+            )
         ),
         escrow=SimpleNamespace(events=SimpleNamespace(TaskFunded=FakeEvents(funded))),
         redis_client=redis,
@@ -127,7 +140,9 @@ async def test_task_state_survives_listener_restart() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stop_returns_from_start_after_the_current_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_stop_returns_from_start_after_the_current_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     listener = make_listener()
     passes: list[int] = []
 
@@ -146,27 +161,11 @@ async def test_stop_returns_from_start_after_the_current_pass(monkeypatch: pytes
 
 
 @pytest.mark.asyncio
-async def test_status_endpoint_reports_listener_state() -> None:
-    listener = make_listener()
-    await listener._persist_block_number(42)
-    listener._connection_state = "connected"
-    app = create_status_app(listener)
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.get("/listener/status")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "last_processed_block": 42,
-        "pending_tasks": 0,
-        "connection_state": "connected",
-    }
-
-
-@pytest.mark.asyncio
 async def test_listener_without_a_dispatch_target_never_claims_a_dispatch() -> None:
     redis = fakeredis.FakeRedis(decode_responses=False)
-    listener = EventListener(SimpleNamespace(), SimpleNamespace(), SimpleNamespace(), redis)
+    listener = EventListener(
+        SimpleNamespace(), SimpleNamespace(), SimpleNamespace(), redis
+    )
     await ready_task(listener, "monitor-only")
 
     assert await listener._try_dispatch("monitor-only") is False
@@ -185,7 +184,9 @@ async def test_failed_dispatch_is_retried_on_the_next_pass() -> None:
         if len(calls) == 1:
             raise RuntimeError("pipeline queue unavailable")
 
-    listener = EventListener(SimpleNamespace(), SimpleNamespace(), SimpleNamespace(), redis, dispatch=flaky)
+    listener = EventListener(
+        SimpleNamespace(), SimpleNamespace(), SimpleNamespace(), redis, dispatch=flaky
+    )
     await ready_task(listener, "retry-me")
 
     assert await listener._try_dispatch("retry-me") is False
@@ -196,7 +197,9 @@ async def test_failed_dispatch_is_retried_on_the_next_pass() -> None:
 
 
 @pytest.mark.asyncio
-async def test_task_interrupted_mid_dispatch_is_not_dispatched_again_after_restart() -> None:
+async def test_task_interrupted_mid_dispatch_is_not_dispatched_again_after_restart() -> (
+    None
+):
     redis = fakeredis.FakeRedis(decode_responses=False)
     entered = asyncio.Event()
 
@@ -204,7 +207,9 @@ async def test_task_interrupted_mid_dispatch_is_not_dispatched_again_after_resta
         entered.set()
         await asyncio.Event().wait()
 
-    first = EventListener(SimpleNamespace(), SimpleNamespace(), SimpleNamespace(), redis, dispatch=hangs)
+    first = EventListener(
+        SimpleNamespace(), SimpleNamespace(), SimpleNamespace(), redis, dispatch=hangs
+    )
     await ready_task(first, "interrupted")
     attempt = asyncio.create_task(first._try_dispatch("interrupted"))
     await entered.wait()
@@ -217,14 +222,18 @@ async def test_task_interrupted_mid_dispatch_is_not_dispatched_again_after_resta
     async def record(task: dict[str, Any]) -> None:
         calls.append(task)
 
-    restarted = EventListener(SimpleNamespace(), SimpleNamespace(), SimpleNamespace(), redis, dispatch=record)
+    restarted = EventListener(
+        SimpleNamespace(), SimpleNamespace(), SimpleNamespace(), redis, dispatch=record
+    )
     await restarted._restore_task_states()
 
     assert await restarted._try_dispatch("interrupted") is False
     assert calls == []
 
 
-async def stored_progress(redis: fakeredis.FakeRedis, genesis: str, cursor: int) -> None:
+async def stored_progress(
+    redis: fakeredis.FakeRedis, genesis: str, cursor: int
+) -> None:
     await redis.set(EventListener.CHAIN_KEY, genesis)
     await redis.set(EventListener.LAST_BLOCK_KEY, str(cursor))
 
@@ -260,7 +269,9 @@ async def test_progress_from_a_previous_chain_is_cleared() -> None:
 
 
 @pytest.mark.asyncio
-async def test_progress_saved_before_chain_identity_is_kept_when_it_fits_the_chain() -> None:
+async def test_progress_saved_before_chain_identity_is_kept_when_it_fits_the_chain() -> (
+    None
+):
     redis = fakeredis.FakeRedis(decode_responses=False)
     await redis.set(EventListener.LAST_BLOCK_KEY, "5")
     listener = chain_listener(redis, GENESIS_A, head=100)
@@ -272,7 +283,9 @@ async def test_progress_saved_before_chain_identity_is_kept_when_it_fits_the_cha
 
 
 @pytest.mark.asyncio
-async def test_progress_saved_before_chain_identity_is_cleared_when_the_cursor_is_past_the_head() -> None:
+async def test_progress_saved_before_chain_identity_is_cleared_when_the_cursor_is_past_the_head() -> (
+    None
+):
     redis = fakeredis.FakeRedis(decode_responses=False)
     await redis.set(EventListener.LAST_BLOCK_KEY, "10")
     listener = chain_listener(redis, GENESIS_A, head=7)
@@ -364,7 +377,9 @@ async def test_the_bid_accepted_trigger_waits_for_the_winning_bid() -> None:
     await listener._process_events(1)
     assert dispatched == []
 
-    listener.task_manager.events.BidAccepted.entries.append(accepted_event(TASK, 7, WORKER))
+    listener.task_manager.events.BidAccepted.entries.append(
+        accepted_event(TASK, 7, WORKER)
+    )
     await listener._process_events(7)
 
     assert len(dispatched) == 1
@@ -376,13 +391,35 @@ async def test_the_bid_accepted_trigger_waits_for_the_winning_bid() -> None:
 @pytest.mark.asyncio
 async def test_a_bid_accepted_task_is_dispatched_once_even_after_a_restart() -> None:
     redis = fakeredis.FakeRedis(decode_responses=False)
-    events = {"created": [created_event(TASK, 5)], "funded": [funded_event(TASK, 6)], "accepted": [accepted_event(TASK, 7, WORKER)]}
+    events = {
+        "created": [created_event(TASK, 5)],
+        "funded": [funded_event(TASK, 6)],
+        "accepted": [accepted_event(TASK, 7, WORKER)],
+    }
     first_dispatches: list[dict[str, Any]] = []
-    first = chain_listener(redis, GENESIS_A, head=100, created=events["created"], funded=events["funded"], accepted=events["accepted"], dispatch=first_dispatches.append, trigger="bid_accepted")
+    first = chain_listener(
+        redis,
+        GENESIS_A,
+        head=100,
+        created=events["created"],
+        funded=events["funded"],
+        accepted=events["accepted"],
+        dispatch=first_dispatches.append,
+        trigger="bid_accepted",
+    )
     await first._process_events(1)
 
     restart_dispatches: list[dict[str, Any]] = []
-    restarted = chain_listener(redis, GENESIS_A, head=100, created=events["created"], funded=events["funded"], accepted=events["accepted"], dispatch=restart_dispatches.append, trigger="bid_accepted")
+    restarted = chain_listener(
+        redis,
+        GENESIS_A,
+        head=100,
+        created=events["created"],
+        funded=events["funded"],
+        accepted=events["accepted"],
+        dispatch=restart_dispatches.append,
+        trigger="bid_accepted",
+    )
     await restarted._process_events(1)
 
     assert len(first_dispatches) == 1
@@ -393,3 +430,84 @@ def test_an_unknown_execution_trigger_is_rejected() -> None:
     redis = fakeredis.FakeRedis(decode_responses=False)
     with pytest.raises(ValueError, match="unknown execution trigger"):
         chain_listener(redis, GENESIS_A, head=1, trigger="on_tuesdays")
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_listener_starts_at_the_configured_block() -> None:
+    """Without a saved position, the listener reads from EVENT_START_BLOCK, not from genesis."""
+    early, deployed = bytes.fromhex("aa" * 32), bytes.fromhex("bb" * 32)
+    listener = chain_listener(
+        fakeredis.FakeRedis(decode_responses=False),
+        GENESIS_A,
+        head=61149200,
+        created=[created_event(early, 5), created_event(deployed, 61149120)],
+    )
+    listener.start_block = 61149114
+
+    from_block = await listener._get_last_processed_block() + 1
+    await listener._process_events(from_block)
+
+    assert from_block == 61149114
+    assert set(listener._task_events) == {listener._task_id(deployed)}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_waits_for_the_configured_confirmations() -> None:
+    """A task is dispatched once its events have the configured confirmations on top of them."""
+    task_id = bytes.fromhex("cc" * 32)
+    chain = FakeChain(GENESIS_A, head=100)
+    dispatched: list[dict[str, Any]] = []
+    listener = EventListener(
+        web3=chain,
+        task_manager=SimpleNamespace(
+            events=SimpleNamespace(
+                TaskCreated=FakeEvents([created_event(task_id, 99)]),
+                BidAccepted=FakeEvents(),
+            )
+        ),
+        escrow=SimpleNamespace(
+            events=SimpleNamespace(TaskFunded=FakeEvents([funded_event(task_id, 99)]))
+        ),
+        redis_client=fakeredis.FakeRedis(decode_responses=False),
+        dispatch=dispatched.append,
+        confirmations=2,
+    )
+
+    await listener._process_events(0)
+    assert dispatched == [], "one confirmation is not enough"
+
+    chain.eth.block_number = 101
+    await listener._process_events(0)
+    assert len(dispatched) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_engine_request_names_the_model_its_description_hash_points_to() -> (
+    None
+):
+    redis = fakeredis.FakeRedis(decode_responses=False)
+    storage = MockStorageBackend()
+    binary = b"model-x-bytes"
+    await ModelRegistry(redis, storage).register(
+        "x", await storage.upload(binary), binary
+    )
+    requests: list[Any] = []
+
+    class Engine:
+        async def execute(self, request: Any) -> None:
+            requests.append(request)
+
+    listener = EventListener(
+        web3=FakeChain(GENESIS_A, head=100),
+        task_manager=SimpleNamespace(),
+        escrow=SimpleNamespace(),
+        redis_client=redis,
+        inference_engine=Engine(),
+    )
+    task = {
+        "created": {"task_id": "0x" + "ab" * 32, "description_hash": Web3.keccak(b"x")}
+    }
+
+    await listener._dispatch_to_engine(task)
+
+    assert requests[0].model_id == "x"

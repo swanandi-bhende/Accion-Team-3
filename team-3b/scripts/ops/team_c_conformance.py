@@ -2,7 +2,7 @@
 
 Team C has not sent a request yet, so there is nothing real to replay. This tool is
 the check to run on the first payloads they send, and it also audits our own
-assumption: a payload is validated against ``docs/INTEGRATION_CONTRACTS.md`` and,
+assumption: a payload is validated against ``docs/INTEGRATION.md`` and,
 optionally, replayed against a live ``POST /inference`` with the response checked.
 
 Usage::
