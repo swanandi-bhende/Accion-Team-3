@@ -1,0 +1,11 @@
+FROM node:20-slim
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install --no-audit --no-fund
+COPY hardhat.config.ts tsconfig.json ./
+COPY contracts ./contracts
+COPY test ./test
+COPY deploy ./deploy
+RUN npx hardhat compile
+EXPOSE 8545
+CMD ["npx", "hardhat", "node", "--hostname", "0.0.0.0"]

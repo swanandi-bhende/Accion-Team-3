@@ -1,0 +1,13 @@
+{
+  "_warning": "TESTNET / DEVELOPMENT TOKEN — not a production asset",
+  "network": "galileo",
+  "chainId": 16602,
+  "address": "0x22374BC6FF12FF2Bf407Da332F16Ee65D52CE0EC",
+  "txHash": "0x87d05d46d9181b6b9a6eaa12f4063d8b5f61d3e24d80d386004033bb86756ca7",
+  "deployer": "0x21dbf28f735063d8D43D7DB6Aa1550b9724755f2",
+  "name": "Test Token",
+  "symbol": "TEST",
+  "decimals": 18,
+  "initialSupply": "10000000000000000000000000",
+  "deployedAt": "2026-10-20T11:08:17.854Z"
+}

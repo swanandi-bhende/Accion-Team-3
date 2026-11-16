@@ -1,0 +1,17 @@
+node_modules/
+artifacts/
+cache/
+typechain-types/
+coverage/
+coverage.json
+
+# Local deployment output. exports/ is the committed handoff bundle instead.
+deployments/hardhat.json
+deployments/localhost.json
+
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/

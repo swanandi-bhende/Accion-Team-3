@@ -1,0 +1,187 @@
+services:
+  hardhat-node:
+    image: team3a-hardhat:local
+    build:
+      context: .
+      dockerfile: Dockerfile.hardhat
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8545',{method:'POST',headers:{'content-type':'application/json'},body:'{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"id\":1}'}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # One-shot deploy: writes deployments/localhost.json, which rpc-wrapper mounts.
+  # ESCROW_TOKEN_ADDRESS is forced empty so the local chain gets the TestERC20
+  # mock even when the host .env points at a public-network token.
+  deploy-contracts:
+    build:
+      context: .
+      dockerfile: Dockerfile.hardhat
+    command: ["npx", "hardhat", "run", "deploy/deploy.ts", "--network", "localhost"]
+    environment:
+      - LOCAL_RPC_URL=http://hardhat-node:8545
+      - ESCROW_TOKEN_ADDRESS=
+    volumes:
+      - ./deployments:/app/deployments
+    depends_on:
+      hardhat-node:
+        condition: service_healthy
+
+  rpc-wrapper:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - WEB3_PROVIDER_URL=http://hardhat-node:8545
+      - DEPLOYMENT_NETWORK=localhost
+      - IPFS_API_URL=http://ipfs-node:5001
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+      - ./deployments:/app/deployments:ro
+    depends_on:
+      hardhat-node:
+        condition: service_healthy
+      deploy-contracts:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  ipfs-node:
+    image: ipfs/kubo:latest
+    ports:
+      - "5001:5001"
+      - "8080:8080"
+    volumes:
+      - ipfs-data:/data/ipfs
+    healthcheck:
+      test: ["CMD", "ipfs", "id"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  nebula-metad:
+    image: vesoft/nebula-metad:v3.6.0
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://nebula-metad:19559/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    command:
+      - "--meta_server_addrs=nebula-metad:9559"
+      - "--local_ip=nebula-metad"
+      - "--ws_ip=nebula-metad"
+      - "--data_path=/data/meta"
+    volumes:
+      - nebula-meta:/data/meta
+
+  nebula-storaged:
+    image: vesoft/nebula-storaged:v3.6.0
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://nebula-storaged:19779/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    command:
+      - "--meta_server_addrs=nebula-metad:9559"
+      - "--local_ip=nebula-storaged"
+      - "--ws_ip=nebula-storaged"
+      - "--data_path=/data/storage"
+    volumes:
+      - nebula-storage:/data/storage
+    depends_on:
+      - nebula-metad
+
+  nebula-graphd:
+    image: vesoft/nebula-graphd:v3.6.0
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://nebula-graphd:19669/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    ports:
+      - "9669:9669"
+    command:
+      - "--meta_server_addrs=nebula-metad:9559"
+      - "--local_ip=nebula-graphd"
+      - "--ws_ip=nebula-graphd"
+    depends_on:
+      - nebula-metad
+      - nebula-storaged
+
+  # Embedding model for Weaviate. near_text search needs a vectorizer module; the
+  # design doc specifies text2vec-transformers.
+  t2v-transformers:
+    image: semitechnologies/transformers-inference:sentence-transformers-multi-qa-MiniLM-L6-cos-v1
+    environment:
+      - ENABLE_CUDA=0
+
+  weaviate:
+    image: semitechnologies/weaviate:1.27.5
+    ports:
+      - "8081:8080"
+      - "50051:50051"
+    environment:
+      - QUERY_DEFAULTS_LIMIT=20
+      - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
+      - PERSISTENCE_DATA_PATH=/var/lib/weaviate
+      - ENABLE_MODULES=text2vec-transformers
+      - DEFAULT_VECTORIZER_MODULE=text2vec-transformers
+      - TRANSFORMERS_INFERENCE_API=http://t2v-transformers:8080
+    depends_on:
+      - t2v-transformers
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/v1/.well-known/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    volumes:
+      - weaviate-data:/var/lib/weaviate
+
+  contract-agent:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.agent
+    ports:
+      - "8100:8100"
+    environment:
+      - NEBULA_HOST=nebula-graphd
+      # Registers the storage node so CREATE SPACE can succeed on a bare compose cluster.
+      - NEBULA_STORAGED_HOST=nebula-storaged
+      - WEAVIATE_URL=http://weaviate:8080
+      - WEAVIATE_GRPC_PORT=50051
+      - USE_LIVE_BACKENDS=true
+      # LLM clause extraction when a provider key is set; rule-based fallback otherwise.
+      - USE_LLM_EXTRACTOR=${USE_LLM_EXTRACTOR:-true}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-}
+    depends_on:
+      nebula-graphd:
+        condition: service_healthy
+      weaviate:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8100/health', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+
+volumes:
+  ipfs-data:
+  nebula-meta:
+  nebula-storage:
+  weaviate-data:

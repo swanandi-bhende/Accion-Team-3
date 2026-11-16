@@ -1,0 +1,62 @@
+{
+  "network": "galileo",
+  "chainId": 16602,
+  "deployedAtBlock": 61149114,
+  "deployedAt": "2026-10-20T11:12:05.346Z",
+  "deployer": "0x21dbf28f735063d8D43D7DB6Aa1550b9724755f2",
+  "gitCommit": null,
+  "compiler": {
+    "version": "0.8.20",
+    "evmVersion": "shanghai",
+    "optimizer": {
+      "enabled": true,
+      "runs": 200
+    }
+  },
+  "constructorArgs": {
+    "EscrowContract": {
+      "token": "0x22374BC6FF12FF2Bf407Da332F16Ee65D52CE0EC"
+    },
+    "StakingContract": {
+      "token": "0x22374BC6FF12FF2Bf407Da332F16Ee65D52CE0EC"
+    },
+    "IdentityContract": {},
+    "TaskManager": {},
+    "SettlementContract": {
+      "escrow": "0x5B685Ca03A8072FB3f9721Dd7017Ed0D8C719217",
+      "staking": "0x41eCc7485d2Bbc188B4f638871ca3f00D2c65C38",
+      "taskManager": "0xA55f34e4137aD55f48aB268d4361F2225C4B5078",
+      "treasury": "0x21dbf28f735063d8D43D7DB6Aa1550b9724755f2"
+    }
+  },
+  "initCalls": {
+    "EscrowContract.setSettlementContract": "0x45D1a7AF404D2EDf5E5c23C7c0b6338227b9BC4E",
+    "EscrowContract.setTaskManagerContract": "0xA55f34e4137aD55f48aB268d4361F2225C4B5078",
+    "StakingContract.setSettlementContract": "0x45D1a7AF404D2EDf5E5c23C7c0b6338227b9BC4E",
+    "TaskManager.setSettlementContract": "0x45D1a7AF404D2EDf5E5c23C7c0b6338227b9BC4E"
+  },
+  "Token": "0x22374BC6FF12FF2Bf407Da332F16Ee65D52CE0EC",
+  "TokenSymbol": "TEST",
+  "TokenDecimals": 18,
+  "Prover": "0x28FB61Dc27a37091f53C0c37b5026AdBbF5E1F46",
+  "EscrowContract": "0x5B685Ca03A8072FB3f9721Dd7017Ed0D8C719217",
+  "StakingContract": "0x41eCc7485d2Bbc188B4f638871ca3f00D2c65C38",
+  "IdentityContract": "0xC70c8865eACC340AB15Af8d4e726F438Cd639Db9",
+  "TaskManager": "0xA55f34e4137aD55f48aB268d4361F2225C4B5078",
+  "SettlementContract": "0x45D1a7AF404D2EDf5E5c23C7c0b6338227b9BC4E",
+  "Treasury": "0x21dbf28f735063d8D43D7DB6Aa1550b9724755f2",
+  "txHashes": {
+    "EscrowContract": "0x8d5b22a06d6e65e7a782d40aa7b289682fce5e3ed63d84e8115734d755738ae0",
+    "StakingContract": "0xbb2e05b32bfe9b61519c3262c2d2ecbcb6cbd1bd4dada1e3b624eddaa147baf5",
+    "IdentityContract": "0x992dd54867f4191ff038a9074dbdd242f94bb6b7d394dba70c65679e4b8b8b7e",
+    "TaskManager": "0x55475550410f050477374c13330c77f0ae9a73c6eee08650a21365bc7f48836a",
+    "SettlementContract": "0xcecfe6c43a83aa3096bf4ed0f51b83ad7a17d3fcb2248ed2bb783a1a7e6969a4"
+  },
+  "explorer": {
+    "EscrowContract": "https://chainscan-galileo.0g.ai/address/0x5B685Ca03A8072FB3f9721Dd7017Ed0D8C719217#code",
+    "StakingContract": "https://chainscan-galileo.0g.ai/address/0x41eCc7485d2Bbc188B4f638871ca3f00D2c65C38#code",
+    "IdentityContract": "https://chainscan-galileo.0g.ai/address/0xC70c8865eACC340AB15Af8d4e726F438Cd639Db9#code",
+    "TaskManager": "https://chainscan-galileo.0g.ai/address/0xA55f34e4137aD55f48aB268d4361F2225C4B5078#code",
+    "SettlementContract": "https://chainscan-galileo.0g.ai/address/0x45D1a7AF404D2EDf5E5c23C7c0b6338227b9BC4E#code"
+  }
+}

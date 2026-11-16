@@ -1,0 +1,32 @@
+{
+  "name": "team3a-blockchain-smart-contracts",
+  "version": "0.1.0",
+  "description": "Blockchain & Smart Contracts subsystem (Team 3a) - Autonomous Web3 Research & On-Chain Settlement Agents",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "test:coverage": "hardhat coverage",
+    "test:py": "python -m pytest tests/ -q",
+    "test:all": "npm run test && npm run test:py",
+    "node": "hardhat node",
+    "deploy:local": "hardhat run deploy/deploy.ts --network localhost",
+    "deploy:sepolia": "hardhat run deploy/deploy.ts --network sepolia",
+    "deploy:galileo": "hardhat run deploy/deploy.ts --network galileo",
+    "deploy:test-token:galileo": "hardhat run scripts/deploy-test-token.ts --network galileo",
+    "export:abi": "hardhat run scripts/export-abis.ts",
+    "verify:sepolia": "hardhat run scripts/verify-contracts.ts --network sepolia",
+    "verify:galileo": "hardhat run scripts/verify-contracts.ts --network galileo",
+    "smoke:local": "hardhat run scripts/lifecycle-smoke.ts --network localhost",
+    "smoke:sepolia": "hardhat run scripts/lifecycle-smoke.ts --network sepolia",
+    "deploy:hardhat": "hardhat run deploy/deploy.ts"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "dotenv": "^16.6.1",
+    "hardhat": "^2.29.1",
+    "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.6.1"
+  }
+}

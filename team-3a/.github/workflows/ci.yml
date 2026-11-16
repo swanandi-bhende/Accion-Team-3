@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npm run compile
+      - run: npm test
+      - name: Lifecycle smoke test (local node)
+        run: |
+          npx hardhat node > node.log 2>&1 &
+          sleep 8
+          npx hardhat run deploy/deploy.ts --network localhost
+          npx hardhat run scripts/lifecycle-smoke.ts --network localhost
+      # Fails the build if a contract changed without re-exporting the ABIs
+      # Team B consumes.
+      - run: npm run export:abi
+      - name: Check exports/ is up to date
+        run: git diff --exit-code exports/ || (echo "exports/ is stale — run 'npm run export:abi' and commit" && exit 1)
+
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m pytest tests/ -q

@@ -1,0 +1,176 @@
+[
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_escrow",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_staking",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_taskManager",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_treasury",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [],
+    "name": "InsufficientFunds",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoWorkerAssigned",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "TaskNotCompleted",
+    "type": "error"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "taskId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "worker",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "workerAmount",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "stakerAmount",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "treasuryAmount",
+        "type": "uint256"
+      }
+    ],
+    "name": "TaskSettled",
+    "type": "event"
+  },
+  {
+    "inputs": [],
+    "name": "escrow",
+    "outputs": [
+      {
+        "internalType": "contract IEscrow",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "owner",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "taskId",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "address",
+        "name": "worker",
+        "type": "address"
+      }
+    ],
+    "name": "settle",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "taskId",
+        "type": "bytes32"
+      }
+    ],
+    "name": "settleTask",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "staking",
+    "outputs": [
+      {
+        "internalType": "contract IStaking",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "taskManager",
+    "outputs": [
+      {
+        "internalType": "contract ITaskManager",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "treasury",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  }
+]
